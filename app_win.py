@@ -540,6 +540,7 @@ class GabaMicWin:
         self._hotkey: HotkeyListener | None = None
         self._recording = False           # shared between click-toggle and hotkey
         self._hwnd: int = 0               # cached Win32 HWND (set after window loads)
+        self._dragging = False            # True while _drag_loop thread is running
 
     # ------------------------------------------------------------------
     # UI helpers  (thread-safe — pywebview queues evaluate_js internally)
@@ -637,29 +638,57 @@ class GabaMicWin:
         _set_window_icon(hwnd)
 
     def start_drag(self) -> None:
-        """Initiate a native Win32 window drag (WM_NCLBUTTONDOWN + HTCAPTION).
+        """Start moving the pill by tracking the cursor in a background thread.
 
         Called from JS once a drag gesture exceeds the movement threshold.
-        Windows takes over mouse tracking from that point — smooth, no DPI
-        issues, no JS delta accumulation.
 
-        Two-step protocol:
-        1. ReleaseCapture() — frees mouse capture from the WebView2 child window
-           so the parent frame can accept the WM_NCLBUTTONDOWN.
-        2. SendMessageW (synchronous) — sends WM_NCLBUTTONDOWN + HTCAPTION, which
-           enters the OS drag loop on the UI thread.  The bridge thread blocks here
-           for the duration of the drag, then resumes.  Using PostMessageW (async)
-           was unreliable because the message could arrive after the button state
-           had already changed.
+        WM_NCLBUTTONDOWN+HTCAPTION does NOT work for pywebview frameless windows:
+        they are created as WS_POPUP (no WS_CAPTION), so DefWindowProc ignores
+        the HTCAPTION hit-test and never enters its drag loop.
+
+        Instead we snapshot the cursor position and window position at drag-start,
+        then loop with GetCursorPos/SetWindowPos until the left button is released.
+        All coordinates come from Win32 (physical pixels) so DPI scaling is handled
+        correctly without any JS involvement after the initial call.
         """
-        if not self._hwnd:
+        if not self._hwnd or self._dragging:
             return
+        self._dragging = True
+        threading.Thread(target=self._drag_loop, daemon=True).start()
+
+    def _drag_loop(self) -> None:
+        """Move the window to follow the cursor until the left button is released."""
         try:
-            user32 = ctypes.windll.user32
-            user32.ReleaseCapture()                    # free WebView2 child capture
-            user32.SendMessageW(self._hwnd, 0x00A1, 2, 0)  # WM_NCLBUTTONDOWN, HTCAPTION
+            import ctypes.wintypes
+            user32       = ctypes.windll.user32
+            VK_LBUTTON   = 0x01
+            SWP_NOSIZE   = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_NOACT    = 0x0010
+
+            # Snapshot starting positions in physical pixels.
+            c0 = ctypes.wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(c0))
+
+            rect = (ctypes.c_long * 4)()
+            user32.GetWindowRect(self._hwnd, rect)
+            wx0, wy0 = rect[0], rect[1]
+
+            while user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000:
+                cn = ctypes.wintypes.POINT()
+                user32.GetCursorPos(ctypes.byref(cn))
+                user32.SetWindowPos(
+                    self._hwnd, 0,
+                    wx0 + (cn.x - c0.x),
+                    wy0 + (cn.y - c0.y),
+                    0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACT,
+                )
+                time.sleep(0.008)   # ~120 fps cap
         except Exception:
             pass
+        finally:
+            self._dragging = False
 
     # ------------------------------------------------------------------
     # Click-to-toggle (called from JS via _PillApi.toggle)
