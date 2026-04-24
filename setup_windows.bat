@@ -81,14 +81,28 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: ── 5. Success ────────────────────────────────────────────────────────────
+:: ── 5. Create GabaMic.lnk shortcut with the GabaMic icon ─────────────────
+:: .bat files always show the CMD icon in Explorer; a .lnk shortcut lets us
+:: attach GabaMic.ico so users have a branded launcher to double-click.
+if exist "%~dp0GabaMic.ico" (
+    powershell -NoProfile -Command ^
+        "$s=New-Object -ComObject WScript.Shell;" ^
+        "$l=$s.CreateShortcut('%~dp0GabaMic.lnk');" ^
+        "$l.TargetPath='%~dp0GabaMic.bat';" ^
+        "$l.IconLocation='%~dp0GabaMic.ico';" ^
+        "$l.WorkingDirectory='%~dp0';" ^
+        "$l.Save()"
+)
+
+:: ── 6. Success ────────────────────────────────────────────────────────────
 echo.
 echo ================================================
 echo   Setup complete!
 echo ================================================
 echo.
 echo To start GabaMic:
-echo   Double-click  GabaMic.bat
+echo   Double-click  GabaMic.lnk  (GabaMic icon)
+echo   or            GabaMic.bat  (same thing, CMD icon)
 echo.
 echo Usage:
 echo   Hold Alt+S anywhere to record.

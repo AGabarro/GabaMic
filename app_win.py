@@ -686,6 +686,15 @@ class GabaMicWin:
 
     def run(self) -> None:
         if platform.system() == "Windows":
+            # Tell Windows this is GabaMic, not a generic Python process.
+            # Must be called before the first window is created so the taskbar
+            # button gets its own identity and picks up the WM_SETICON we set later.
+            try:
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    "GabaMic.App.1"
+                )
+            except Exception:
+                pass
             user32 = ctypes.windll.user32
             sw = user32.GetSystemMetrics(0)
             sh = user32.GetSystemMetrics(1)
