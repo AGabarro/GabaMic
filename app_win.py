@@ -72,7 +72,7 @@ _PILL_HTML = """\
 
 html, body {
   width: 240px; height: 44px;
-  background: transparent;
+  background: #0A0D18;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -390,7 +390,7 @@ class GabaMicWin:
             resizable        = False,
             frameless        = True,
             on_top           = True,
-            background_color = "#00000000",
+            background_color = "#0A0D18",
             min_size         = (PILL_W, PILL_H),
         )
 
