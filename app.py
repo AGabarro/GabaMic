@@ -28,6 +28,7 @@ from gabamic.injector import TextInjector
 from gabamic.transcriber import Transcriber
 
 CONFIG_PATH = pathlib.Path(__file__).parent / "config.json"
+_ICON_PATH  = pathlib.Path(__file__).parent / "GabaMic.png"
 
 LANGUAGE_CYCLE = [
     (None, "Auto-detect"),
@@ -256,7 +257,8 @@ class _OverlayPanel:
 class GabaMicApp(rumps.App):
 
     def __init__(self) -> None:
-        super().__init__("🎙", quit_button=None)
+        icon = str(_ICON_PATH) if _ICON_PATH.exists() else None
+        super().__init__("GabaMic", icon=icon, template=False, quit_button=None)
 
         cfg = load_config()
 
@@ -347,7 +349,7 @@ class GabaMicApp(rumps.App):
         audio = self._recorder.stop()
 
         if len(audio) == 0:
-            self.title = "🎙"
+            self.title = None        # icon only when idle
             self._set_status("Idle")
             self._overlay_cmds.put(("idle", ""))   # return to logo
             return
@@ -358,7 +360,7 @@ class GabaMicApp(rumps.App):
 
         text = self._transcriber.transcribe(audio)
 
-        self.title = "🎙"
+        self.title = None            # icon only when idle
         self._set_status("Idle")
 
         if text:

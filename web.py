@@ -27,7 +27,7 @@ PORT = 8765
 _transcriber: Transcriber | None = None
 _silence_rms_threshold: float = 0.01
 _min_recording_seconds: float = 0.5
-_LOGO_PATH = pathlib.Path(__file__).parent / "Mock Images" / "main_logo.png"
+_LOGO_PATH = pathlib.Path(__file__).parent / "GabaMic.png"
 
 # ---------------------------------------------------------------------------
 # Inline HTML / CSS / JS
@@ -41,6 +41,7 @@ _HTML = r"""<!DOCTYPE html>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="GabaMic">
   <title>GabaMic</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='15' y1='185' x2='185' y2='15' gradientUnits='userSpaceOnUse'%3E%3Cstop offset='0%25' stop-color='%2300FFEF'/%3E%3Cstop offset='100%25' stop-color='%23FF6200'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='100' cy='100' r='69' fill='none' stroke='url(%23g)' stroke-width='32' stroke-dasharray='361.3 72.3'/%3E%3Crect x='100' y='84' width='85' height='32' fill='url(%23g)'/%3E%3C/svg%3E">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 

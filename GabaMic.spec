@@ -21,6 +21,8 @@ datas = [
     ("config.json", "."),
     # Include the gabamic package explicitly (auto-detected, but belt-and-suspenders)
     ("gabamic", "gabamic"),
+    # Bundle the icon so app_win.py can load it via Win32 at runtime
+    ("GabaMic.ico", "."),
 ]
 binaries = []
 hiddenimports = []
@@ -102,7 +104,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,   # set to "GabaMic.ico" once an icon file is available
+    icon="GabaMic.ico",
 )
 
 coll = COLLECT(

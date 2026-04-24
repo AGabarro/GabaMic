@@ -1,7 +1,11 @@
 """Speech-to-text engine using faster-whisper."""
 
+import os
+
 import numpy as np
 from faster_whisper import WhisperModel
+
+os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 
 class Transcriber:
@@ -19,7 +23,12 @@ class Transcriber:
         language: str | None = None,
     ) -> None:
         self.language = language  # None = auto-detect; "en" or "es" = forced
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        self.model = WhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+            cpu_threads=os.cpu_count() or 4,
+        )
 
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe a 1-D float32 numpy audio array to text.
@@ -37,7 +46,7 @@ class Transcriber:
         segments, _info = self.model.transcribe(
             audio,
             language=self.language,
-            beam_size=5,
+            beam_size=2,
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 300},
             condition_on_previous_text=False,

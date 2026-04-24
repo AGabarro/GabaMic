@@ -54,6 +54,9 @@ GabaMic/
 ├── app.py                   ← menu bar entry point (macOS production)
 ├── app_win.py               ← floating pill entry point (Windows production)
 ├── web.py                   ← browser UI entry point (cross-platform)
+├── GabaMic.ico              ← Windows icon (16/32/48/64/128/256 px) — auto-generated
+├── GabaMic.png              ← macOS menu bar + web favicon icon (256 px, transparent)
+├── make_icon.py             ← Regenerate GabaMic.ico / GabaMic.png from the G-logo SVG
 ├── GabaMic.bat              ← Windows daily launcher (silent, no console window)
 ├── setup_windows.bat        ← Windows one-time setup (venv + deps + optional launch)
 ├── build_windows.bat        ← Windows local build script (calls pyinstaller)
