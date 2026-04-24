@@ -1,13 +1,11 @@
 """GabaMic — Windows floating pill entry point.
 
-Hold Alt+S anywhere to record. Release to transcribe and inject the text
-into whatever application / text box is currently focused.
+Left-click the pill to start recording; click again to stop and paste.
+Alt+S also works as a hold-to-record hotkey.
+Right-click the pill to quit.
 
 Requirements: pip install -r requirements_win.txt
-
-Usage:
-    python app_win.py          (or double-click GabaMic.bat)
-    Right-click the pill to quit.
+Usage:        python app_win.py   (or double-click GabaMic.bat)
 """
 
 import ctypes
@@ -28,38 +26,34 @@ from gabamic.injector import TextInjector
 from gabamic.transcriber import Transcriber
 
 
+# ---------------------------------------------------------------------------
+# Config resolution — works for both plain script and PyInstaller onedir
+# ---------------------------------------------------------------------------
+
 def _find_config() -> pathlib.Path:
-    """Locate config.json for both a plain script run and a PyInstaller bundle.
+    """Locate config.json.
 
-    PyInstaller 6+ onedir layout:
-        GabaMic.exe          ← sys.executable
-        _internal/           ← sys._MEIPASS  (all bundled files land here)
-            config.json
-            *.pyd / *.dll
-            ...
-
-    We want config.json to sit next to GabaMic.exe so the user can edit it.
-    On the very first launch we copy the bundled default out of _internal/.
-    Every subsequent launch reads the (possibly user-edited) copy beside the exe.
+    PyInstaller 6+ places bundled data files in _internal/ (sys._MEIPASS),
+    not next to the exe.  On the first launch we copy the default there so
+    the user can edit it; every subsequent launch reads that copy.
     """
     if getattr(sys, "frozen", False):
         exe_dir = pathlib.Path(sys.executable).parent
         user_cfg = exe_dir / "config.json"
         if not user_cfg.exists():
-            # Seed an editable copy from the bundled default inside _internal/
             bundled = pathlib.Path(sys._MEIPASS) / "config.json"
             if bundled.exists():
                 shutil.copy(bundled, user_cfg)
         return user_cfg
-    # Plain Python run — config.json is next to app_win.py
     return pathlib.Path(__file__).parent / "config.json"
 
 
 CONFIG_PATH = _find_config()
-PILL_W, PILL_H = 240, 44
+PILL_W, PILL_H = 170, 34
+
 
 # ---------------------------------------------------------------------------
-# Pill HTML  — self-contained, no external resources
+# Pill HTML — self-contained, no external resources
 # ---------------------------------------------------------------------------
 
 _PILL_HTML = """\
@@ -71,35 +65,37 @@ _PILL_HTML = """\
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
-  width: 240px; height: 44px;
-  background: #0A0D18;
+  width: 170px; height: 34px;
+  background: #080B14;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .pill {
-  width: 240px; height: 44px;
-  background: rgba(10, 13, 24, 0.95);
-  border: 1px solid rgba(0, 255, 239, 0.28);
-  border-radius: 22px;
+  width: 170px; height: 34px;
+  background: rgba(8, 11, 20, 0.96);
+  border: 1px solid rgba(0, 255, 239, 0.25);
+  border-radius: 17px;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  -webkit-app-region: drag;
   user-select: none;
-  cursor: default;
+  cursor: pointer;
+  transition: border-color 0.18s;
 }
+.pill:hover  { border-color: rgba(0, 255, 239, 0.50); }
+.pill:active { border-color: rgba(0, 255, 239, 0.75); }
 
-/* ── Idle: animated SVG G ──────────────────────────────────────────── */
+/* ── Idle: animated GabaMic logo ─────────────────────────────────── */
 .logo-stage {
   display: flex; align-items: center; justify-content: center;
   width: 100%; height: 100%; position: relative;
 }
 .aura {
-  position: absolute; width: 48%; height: 82%; border-radius: 50%;
+  position: absolute; width: 44%; height: 80%; border-radius: 50%;
   background: radial-gradient(ellipse at center,
-    rgba(0,255,239,.11) 0%, rgba(255,98,0,.07) 42%, transparent 70%);
+    rgba(0,255,239,.13) 0%, rgba(255,98,0,.07) 42%, transparent 70%);
   animation: aura 3.5s cubic-bezier(.45,0,.55,1) infinite;
   pointer-events: none;
 }
@@ -107,33 +103,33 @@ html, body {
   0%,100% { transform: scale(.88); opacity: .45; }
   50%     { transform: scale(1.12); opacity: .9; }
 }
-.idle-logo-svg {
-  position: relative; height: 68%; width: auto;
+.logo-svg {
+  position: relative; height: 60%; width: auto;
   animation: breathe 3.5s cubic-bezier(.45,0,.55,1) infinite;
   pointer-events: none;
 }
 @keyframes breathe {
   0%,100% {
-    filter: drop-shadow(0 0 3px rgba(0,255,239,.2));
+    filter: drop-shadow(0 0 3px rgba(0,255,239,.25));
     transform: scale(.97);
   }
   50% {
-    filter: drop-shadow(0 0 10px rgba(0,255,239,.55))
+    filter: drop-shadow(0 0 9px rgba(0,255,239,.55))
             drop-shadow(0 0 20px rgba(255,98,0,.28));
-    transform: scale(1.03);
+    transform: scale(1.04);
   }
 }
 
-/* ── Recording / transcribing / loading / done: dot + text ────────── */
+/* ── Status row (recording / transcribing / loading / done) ────────── */
 .status-row {
   display: none;
   align-items: center;
-  gap: 9px;
-  padding: 0 18px;
+  gap: 7px;
+  padding: 0 14px;
   width: 100%;
 }
 .dot {
-  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
 }
 .dot.recording    { background: #FF6200; animation: pulse .9s ease-in-out infinite; }
 .dot.transcribing { background: rgba(255,98,0,.70); animation: pulse .9s ease-in-out infinite; }
@@ -142,7 +138,7 @@ html, body {
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 
 .status-text {
-  font-size: 12.5px; font-weight: 500; color: #00FFEF;
+  font-size: 11px; font-weight: 500; color: #00FFEF;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 </style>
@@ -152,18 +148,18 @@ html, body {
 
   <div class="logo-stage" id="idle-view">
     <div class="aura"></div>
-    <svg class="idle-logo-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <svg class="logo-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <linearGradient id="g" x1="0%" y1="100%" x2="100%" y2="0%">
+        <linearGradient id="g" x1="15" y1="185" x2="185" y2="15"
+                        gradientUnits="userSpaceOnUse">
           <stop offset="0%" stop-color="#00FFEF"/>
           <stop offset="100%" stop-color="#FF6200"/>
         </linearGradient>
       </defs>
-      <path d="M148.8 30.4 A85 85 0 1 0 178.8 132
-               L142.3 132  A53 53 0 1 1 130.4 56.6 Z
-               M100 132 L100 100 L153 100
-               A53 53 0 0 1 142.3 132 Z"
-            fill="url(#g)"/>
+      <circle cx="100" cy="100" r="69"
+              fill="none" stroke="url(#g)" stroke-width="32"
+              stroke-dasharray="361.3 72.3"/>
+      <rect x="100" y="84" width="85" height="32" fill="url(#g)"/>
     </svg>
   </div>
 
@@ -200,12 +196,19 @@ function setState(state, text) {
   } else if (state === 'loading') {
     statusText.textContent = text || 'Setting up\u2026';
   } else if (state === 'done') {
-    const preview = text.length > 28 ? text.slice(0, 28) + '\u2026' : (text || 'Done');
+    const preview = text.length > 20 ? text.slice(0, 20) + '\u2026' : (text || 'Done');
     statusText.textContent = preview;
   }
 }
 
-// Right-click → quit
+// Left-click: toggle recording
+document.getElementById('pill').addEventListener('click', () => {
+  if (window.pywebview && window.pywebview.api) {
+    window.pywebview.api.toggle();
+  }
+});
+
+// Right-click: quit
 document.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   if (window.pywebview && window.pywebview.api) {
@@ -222,9 +225,17 @@ document.addEventListener('contextmenu', (e) => {
 # ---------------------------------------------------------------------------
 
 class _PillApi:
-    """Exposed to JavaScript via window.pywebview.api."""
+    """Methods exposed to JavaScript via window.pywebview.api."""
+
+    def __init__(self, app: "GabaMicWin") -> None:
+        self._app = app
+
+    def toggle(self) -> None:
+        """Left-click: start or stop recording."""
+        threading.Thread(target=self._app.toggle_recording, daemon=True).start()
 
     def quit(self) -> None:
+        """Right-click: close the pill."""
         if webview.windows:
             webview.windows[0].destroy()
 
@@ -240,7 +251,7 @@ def load_config() -> dict:
     except json.JSONDecodeError as exc:
         _show_error("GabaMic — Config Error",
                     f"config.json is not valid JSON:\n\n{exc}\n\n"
-                    "Delete config.json and restart to use defaults.")
+                    "Delete config.json and restart to restore defaults.")
         raise
     except FileNotFoundError:
         _show_error("GabaMic — Config Error",
@@ -249,7 +260,7 @@ def load_config() -> dict:
 
 
 def _model_is_cached(model_size: str) -> bool:
-    """Return True if the Whisper model is already in the local HuggingFace cache."""
+    """Return True if the Whisper model already exists in the HuggingFace cache."""
     import os
     hf_home = os.getenv("HF_HOME")
     cache_dir = (pathlib.Path(hf_home) / "hub") if hf_home else (
@@ -257,14 +268,13 @@ def _model_is_cached(model_size: str) -> bool:
     )
     if not cache_dir.exists():
         return False
-    pattern = f"models--Systran--faster-whisper-{model_size}"
-    return any(cache_dir.glob(f"{pattern}*"))
+    return any(cache_dir.glob(f"models--Systran--faster-whisper-{model_size}*"))
 
 
 def _show_error(title: str, message: str) -> None:
-    """Show a native Windows message-box error dialog, with stderr fallback."""
+    """Show a Windows error dialog; fall back to stderr on non-Windows."""
     try:
-        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)  # MB_ICONERROR
+        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
     except Exception:
         print(f"ERROR — {title}\n{message}", file=sys.stderr)
 
@@ -284,11 +294,12 @@ class GabaMicWin:
             silence_rms_threshold = cfg.get("silence_rms_threshold", 0.01),
             min_recording_seconds = cfg.get("min_recording_seconds", 0.5),
         )
-        self._transcriber: Transcriber | None = None   # loaded lazily after UI appears
+        self._transcriber: Transcriber | None = None
         self._injector = TextInjector()
         self._window: webview.Window | None = None
         self._ready = False
         self._hotkey: HotkeyListener | None = None
+        self._recording = False           # shared between click-toggle and hotkey
 
     # ------------------------------------------------------------------
     # UI helpers  (thread-safe — pywebview queues evaluate_js internally)
@@ -296,26 +307,23 @@ class GabaMicWin:
 
     def _set_state(self, state: str, text: str = "") -> None:
         if self._window and self._ready:
-            js = f"setState({json.dumps(state)}, {json.dumps(text)})"
-            self._window.evaluate_js(js)
+            self._window.evaluate_js(
+                f"setState({json.dumps(state)}, {json.dumps(text)})"
+            )
 
     # ------------------------------------------------------------------
-    # Background initialisation  (runs after the pill window has loaded)
+    # Background initialisation — runs after the window has loaded
     # ------------------------------------------------------------------
 
     def _setup(self) -> None:
-        """Load the Whisper model and start the hotkey listener.
-
-        Runs in a daemon thread so the pill window is visible and responsive
-        while the model loads (or downloads on first run).
-        """
         cfg = self._cfg
         model_size = cfg.get("model_size", "base")
 
-        if _model_is_cached(model_size):
-            self._set_state("loading", "Loading model\u2026")
-        else:
-            self._set_state("loading", "Downloading model\u2026")
+        self._set_state(
+            "loading",
+            "Downloading model\u2026" if not _model_is_cached(model_size)
+            else "Loading model\u2026",
+        )
 
         try:
             self._transcriber = Transcriber(
@@ -333,13 +341,12 @@ class GabaMicWin:
             )
             return
 
-        # Warmup pass — JIT compiles the model so the first real transcription is fast
         self._set_state("loading", "Warming up\u2026")
         self._transcriber.transcribe(np.zeros(16000, dtype=np.float32))
 
         self._hotkey = HotkeyListener(
-            on_start = self._on_start,
-            on_stop  = self._on_stop,
+            on_start = self._on_hotkey_start,
+            on_stop  = self._on_hotkey_stop,
             modifier = cfg.get("hotkey_modifier", "alt"),
             key      = cfg.get("hotkey_key", "s"),
         )
@@ -348,20 +355,19 @@ class GabaMicWin:
         self._set_state("idle")
 
     # ------------------------------------------------------------------
-    # Hotkey callbacks  (daemon threads)
+    # Shared recording logic
     # ------------------------------------------------------------------
 
-    def _on_start(self) -> None:
-        if self._transcriber is None:
-            return  # still initialising
+    def _start_recording(self) -> None:
+        """Begin capturing audio and update the UI."""
+        self._recording = True
         self._recorder.start()
         self._set_state("recording")
 
-    def _on_stop(self) -> None:
-        audio = self._recorder.stop()   # always stop; safe if start() was never called
-        if self._transcriber is None:
-            self._set_state("idle")
-            return
+    def _stop_recording(self) -> None:
+        """Stop capturing, transcribe, inject, and update the UI."""
+        self._recording = False
+        audio = self._recorder.stop()
 
         if len(audio) == 0:
             self._set_state("idle")
@@ -382,17 +388,43 @@ class GabaMicWin:
         self._set_state("idle")
 
     # ------------------------------------------------------------------
+    # Click-to-toggle (called from JS via _PillApi.toggle)
+    # ------------------------------------------------------------------
+
+    def toggle_recording(self) -> None:
+        """Left-click handler: start if idle, stop if recording."""
+        if self._transcriber is None:
+            return  # still initialising
+        if not self._recording:
+            self._start_recording()
+        else:
+            self._stop_recording()
+
+    # ------------------------------------------------------------------
+    # Hotkey callbacks  (hold Alt+S to record, release to transcribe)
+    # ------------------------------------------------------------------
+
+    def _on_hotkey_start(self) -> None:
+        if self._transcriber is None or self._recording:
+            return
+        self._start_recording()
+
+    def _on_hotkey_stop(self) -> None:
+        if not self._recording:
+            return
+        self._stop_recording()
+
+    # ------------------------------------------------------------------
     # Run
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        # Screen position: centre-bottom, above the taskbar
         if platform.system() == "Windows":
             user32 = ctypes.windll.user32
             sw = user32.GetSystemMetrics(0)
             sh = user32.GetSystemMetrics(1)
         else:
-            sw, sh = 1920, 1080   # fallback for testing on other platforms
+            sw, sh = 1920, 1080
 
         x = (sw - PILL_W) // 2
         y = sh - PILL_H - 80
@@ -400,7 +432,7 @@ class GabaMicWin:
         self._window = webview.create_window(
             title            = "",
             html             = _PILL_HTML,
-            js_api           = _PillApi(),
+            js_api           = _PillApi(self),
             width            = PILL_W,
             height           = PILL_H,
             x                = x,
@@ -408,20 +440,19 @@ class GabaMicWin:
             resizable        = False,
             frameless        = True,
             on_top           = True,
-            background_color = "#0A0D18",
+            background_color = "#080B14",
             min_size         = (PILL_W, PILL_H),
         )
 
         def _on_loaded():
             self._ready = True
-            # Kick off heavy initialisation in background so the window stays responsive
             threading.Thread(target=self._setup, daemon=True).start()
 
         self._window.events.loaded += _on_loaded
 
-        print("GabaMic starting.  Hold Alt+S to dictate once ready.  Right-click to quit.")
+        print("GabaMic starting.  Click the pill or hold Alt+S to dictate.  "
+              "Right-click to quit.")
 
-        # Start pywebview — blocks until the window is closed
         webview.start(private_mode=False)
 
         if self._hotkey:
