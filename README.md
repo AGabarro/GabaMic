@@ -1,167 +1,134 @@
 # GabaMic — Voice-to-Text Dictation
 
 Hold **Alt+S**, speak, release — your words are typed into whatever app is in focus.
-Everything runs locally: no cloud, no subscription, no data sent anywhere.
+Runs entirely on your machine. No cloud, no subscription, no data sent anywhere.
 
 ---
 
-## Platform Overview
+## Windows
 
-| Entry point | macOS | Windows | Linux |
-|---|---|---|---|
-| `app.py` — menu bar + floating pill | ✅ | ✗ | ✗ |
-| `app_win.py` — floating pill | ✗ | ✅ | ✗ |
-| `main.py` — terminal only | ✅ | ✅ | ✅ (X11) |
-| `web.py` — browser widget | ✅ | ✅ | ✅ |
+### Option A — Download the app (no Python, no setup)
 
----
+This is the easiest path. A pre-built `.exe` is built automatically by GitHub Actions
+and attached to every release.
 
-## Requirements
+1. Go to **[github.com/AGabarro/GabaMic/releases](https://github.com/AGabarro/GabaMic/releases)**
+2. Under the latest release, download **`GabaMic-Windows.zip`**
+3. Extract the zip to any folder (e.g. `C:\GabaMic`)
+4. Double-click **`GabaMic.exe`** inside the extracted folder
 
-| Requirement | macOS | Windows |
-|---|---|---|
-| Python | 3.10 or newer | 3.10 or newer |
-| Microphone | ✅ | ✅ |
-| Accessibility permission | Required for `app.py` / `main.py` | Not required |
-| WebView2 runtime | — | Required for `app_win.py` — ships with Windows 10 (KB4577586+) and all Windows 11 |
+A small pill appears at the bottom-centre of your screen.
 
-> **First run:** the Whisper speech model (~150 MB) downloads automatically and is cached. All subsequent runs are fully offline.
+> **First launch only:** the pill shows "Downloading model…" for a few minutes while
+> the speech model (~150 MB) downloads. Your internet connection is required for this
+> one-time step. After that, GabaMic works fully offline forever.
+
+Once the animated logo appears, GabaMic is ready. See **[Using GabaMic](#using-gabamic)** below.
 
 ---
 
-## Installation
+### Option B — Run from source (requires Python, one-time setup)
 
-### macOS
+Use this if no pre-built release is available yet, or if you want to run the latest code.
+
+**Step 1 — Install Python (skip if already installed)**
+
+Download Python 3.10 or newer from **[python.org/downloads](https://www.python.org/downloads/)**.
+
+On the installer's first screen, tick **"Add Python to PATH"** before clicking Install.
+
+**Step 2 — Download GabaMic**
+
+Download **[GabaMic-main.zip](https://github.com/AGabarro/GabaMic/archive/refs/heads/main.zip)**
+and extract it anywhere (e.g. `C:\GabaMic`).
+
+**Step 3 — Run the setup script (one time only)**
+
+Inside the extracted folder, double-click **`setup_windows.bat`**.
+
+It will:
+- Check your Python version
+- Create an isolated environment
+- Download and install all dependencies
+- Offer to launch GabaMic immediately when done
+
+**Step 4 — Launch GabaMic**
+
+From now on, just double-click **`GabaMic.bat`** to start.
+
+---
+
+## macOS
+
+### Step 1 — Download GabaMic
+
+Either download the zip:
+
+**[github.com/AGabarro/GabaMic/archive/refs/heads/main.zip](https://github.com/AGabarro/GabaMic/archive/refs/heads/main.zip)**
+
+…or clone the repo if you have git:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/GabaMic.git
-cd GabaMic
+git clone https://github.com/AGabarro/GabaMic.git
+```
 
+### Step 2 — Install dependencies
+
+Open **Terminal**, navigate to the GabaMic folder, then run:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
-
 pip install -r requirements.txt
 ```
 
-### Windows
-
-Open **PowerShell** (or Command Prompt):
-
-```powershell
-git clone https://github.com/YOUR_USERNAME/GabaMic.git
-cd GabaMic
-
-python -m venv .venv
-.venv\Scripts\Activate.ps1        # PowerShell
-# — or —
-.venv\Scripts\activate.bat         # Command Prompt
-
-pip install -r requirements.txt
-pip install pywebview>=4.0.2       # only needed for app_win.py
-```
-
-> **PowerShell execution policy:** if `Activate.ps1` is blocked, run:
-> `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
-
----
-
-## How to Run
-
-### macOS — Floating Pill + Menu Bar (recommended)
+### Step 3 — Run
 
 ```bash
 source .venv/bin/activate
 python app.py
 ```
 
-A **🎙** icon appears in the menu bar and a small pill overlay appears at the bottom of your screen. Hold **Alt+S** anywhere to record, release to transcribe. The text is typed into whatever app is focused.
+A **🎙** icon appears in the menu bar. A small pill also appears at the bottom of your
+screen. GabaMic is ready.
 
-- Pill turns orange while recording, shows the transcribed text for 2.5 s, then returns to idle.
-- Click the menu bar icon to switch language: Auto-detect → English → Spanish.
-
-> Requires **Accessibility permission** — see the macOS section below.
-
----
-
-### Windows — Floating Pill (recommended)
-
-```powershell
-.venv\Scripts\Activate.ps1
-python app_win.py
-```
-
-A **240 × 44 px pill** appears at the bottom-centre of your screen. It stays above all other windows.
-
-- Hold **Alt+S** to record → orange dot + "Recording…"
-- Release → "Transcribing…" → text is pasted into the focused window
-- **Right-click the pill to quit**
-
-No Accessibility permission or admin rights required. WebView2 must be installed (it is on every up-to-date Windows 10 / 11 machine).
-
-**If the pill window appears but the hotkey does nothing:**
-Some security software blocks pynput's global keyboard listener. Run PowerShell as administrator and retry.
+> **Accessibility permission (one time):** the first time you press Alt+S, macOS may
+> show a permission prompt. Click **Open System Settings**, then turn on the toggle
+> for Terminal (or the app) under **Privacy & Security → Accessibility**. Restart the
+> script once. This is required for global hotkey detection and is a one-time step.
 
 ---
 
-### All Platforms — Browser Widget
+## Using GabaMic
 
-```bash
-# macOS / Linux
-source .venv/bin/activate
-python web.py
+Once running, the pill sits at the bottom-centre of your screen above all other windows.
 
-# Windows
-.venv\Scripts\Activate.ps1
-python web.py
-```
+| Pill state | Meaning |
+|---|---|
+| Animated logo (cyan glow) | Ready — waiting for you to press Alt+S |
+| Orange dot · "Recording…" | Listening to your microphone |
+| Orange dot · "Transcribing…" | Converting speech to text |
+| Cyan dot · transcribed text | Done — text has been pasted into your app |
+| Cyan dot · "Downloading model…" | First-run model download in progress |
+| Cyan dot · "Warming up…" | Model is loading (normal on startup) |
 
-Opens `http://localhost:8765` automatically. Click-and-hold the logo to record, release to transcribe. The result appears in an editable text box and is auto-copied to your clipboard.
+**How to dictate:**
 
-Works on every platform with no system permissions. The browser asks for microphone access on first use.
+1. Click into the app / text field where you want the text to appear
+2. Hold **Alt+S** and speak
+3. Release **Alt+S**
+4. The transcribed text is pasted automatically
 
----
+**To quit:** right-click the pill.
 
-### macOS / Linux — Terminal (headless)
-
-```bash
-source .venv/bin/activate
-python main.py
-```
-
-Hold **Alt+S** to record, release to transcribe. Output is printed to the terminal and pasted into the focused app. Quit with **Ctrl+C**.
+**macOS only:** click the 🎙 menu bar icon to switch language between
+Auto-detect, English, and Spanish.
 
 ---
 
-## macOS: Accessibility Permission
+## Changing the hotkey
 
-`app.py` and `main.py` need permission to listen for the hotkey system-wide.
-
-1. Run the app and press **Alt+S** once — macOS will show a permission prompt.
-2. Open **System Settings → Privacy & Security → Accessibility**.
-3. Add **Terminal** (for `main.py`) or the app bundle (for `app.py`) and turn the toggle on.
-4. Restart the script.
-
-This is a one-time step. `web.py` does not need this permission.
-
----
-
-## Windows: WebView2 Check
-
-`app_win.py` requires the **Microsoft Edge WebView2 Runtime**. To check if it is installed:
-
-1. Open **Settings → Apps → Installed apps**
-2. Search for **"WebView2"**
-
-If it is not listed, download the Evergreen Bootstrapper from:
-**https://developer.microsoft.com/en-us/microsoft-edge/webview2/**
-
-Most Windows 10 (21H2+) and all Windows 11 machines already have it.
-
----
-
-## Changing the Hotkey
-
-Open `config.json` and edit:
+Open **`config.json`** (next to the `.exe` or in the GabaMic folder) and edit:
 
 ```json
 "hotkey_modifier": "alt",
@@ -170,49 +137,74 @@ Open `config.json` and edit:
 
 | `hotkey_modifier` | Key |
 |---|---|
-| `"alt"` | Alt / Option |
+| `"alt"` | Alt (Windows) / Option (macOS) |
 | `"ctrl"` | Control |
 | `"shift"` | Shift |
-| `"cmd"` | Command (macOS only) |
+| `"cmd"` | Command — macOS only |
 
-Set `hotkey_key` to any single letter, e.g. `"r"` for **Alt+R**.
+Change `hotkey_key` to any single letter, e.g. `"r"` for **Alt+R**.
 
 ---
 
-## Other Settings (`config.json`)
+## Other settings (`config.json`)
 
 | Setting | Default | What it does |
 |---|---|---|
-| `model_size` | `"base"` | Whisper model size. `"tiny"` is fastest; `"small"` / `"medium"` are more accurate but slower. |
-| `language` | `null` | `null` = auto-detect. Force a language with `"en"`, `"es"`, `"fr"`, etc. |
-| `silence_rms_threshold` | `0.01` | Lower this (e.g. `0.005`) if quiet speech is not being picked up. |
-| `min_recording_seconds` | `0.5` | Minimum recording length before transcription is attempted. |
+| `model_size` | `"base"` | `"tiny"` is fastest; `"small"` or `"medium"` are more accurate but slower to load |
+| `language` | `null` | `null` = auto-detect language. Set to `"en"`, `"es"`, `"fr"`, etc. to force a language |
+| `silence_rms_threshold` | `0.01` | Lower to `0.005` if quiet speech isn't being picked up |
+| `min_recording_seconds` | `0.5` | Minimum recording length; raise if very short phrases are missed |
 
 ---
 
 ## Troubleshooting
 
-**Nothing happens when I press Alt+S (macOS)**
-→ Accessibility permission is missing — follow the steps above.
+**Pill shows "Downloading model…" for a long time**
+→ The ~150 MB speech model is downloading. Leave it running — it only happens once.
+Check your internet connection if it never finishes.
 
-**Nothing happens when I press Alt+S (Windows)**
-→ Some antivirus or security software blocks pynput. Try running PowerShell as Administrator.
-→ If Alt+S conflicts with another app, change the hotkey in `config.json`.
+**Alt+S does nothing (Windows)**
+→ Wait until the animated logo appears — the hotkey is not active during "Warming up…".
+→ Some security software blocks global keyboard listeners. Right-click `GabaMic.bat`
+and choose **Run as administrator**.
+→ If Alt+S is claimed by another app, change the hotkey in `config.json`.
 
-**The pill appears but text is not pasted**
-→ On Windows, make sure the target app is focused *before* releasing Alt+S. GabaMic uses `Ctrl+V` to paste.
+**Alt+S does nothing (macOS)**
+→ Accessibility permission is missing. Go to **System Settings → Privacy & Security →
+Accessibility**, add Terminal (or the app), toggle it on, and restart the script.
 
-**"No speech detected"**
-→ Lower `silence_rms_threshold` to `0.005` in `config.json`. Hold the key for at least half a second.
+**Text is not pasted into my app**
+→ Click into the target text field *before* releasing Alt+S. GabaMic pastes via
+`Ctrl+V` on Windows and `Cmd+V` on macOS — the target window must be focused.
 
-**Slow on first run**
-→ The Whisper model is downloading (~150 MB). Subsequent runs are instant.
+**"No speech detected" / empty result**
+→ Lower `silence_rms_threshold` to `0.005` in `config.json`.
+→ Hold Alt+S for at least half a second before speaking.
 
-**`app_win.py` crashes with "WebView2 not found"**
-→ Install the WebView2 Runtime from the link in the Windows section above.
+**`GabaMic.exe` crashes on launch (Windows)**
+→ Make sure Microsoft Edge WebView2 is installed. It ships with every Windows 11 machine
+and with Windows 10 (21H2 and later). If missing, download the Evergreen Bootstrapper
+from **[developer.microsoft.com/en-us/microsoft-edge/webview2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)**.
 
-**`app.py` fails on Windows or Linux**
-→ `app.py` uses macOS-only system libraries. Use `app_win.py` (Windows) or `web.py` (all platforms).
+**`app.py` fails on Windows**
+→ `app.py` uses macOS-only system libraries. Use `GabaMic.exe` or `GabaMic.bat` instead.
 
-**PowerShell says "cannot be loaded because running scripts is disabled"**
-→ Run: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
+---
+
+## For developers — building the Windows .exe
+
+The `.exe` is built automatically by GitHub Actions on every tagged release.
+To trigger a build manually:
+
+1. Push your changes to GitHub
+2. Go to **Actions → Build Windows Executable → Run workflow**
+
+To build locally on a Windows machine:
+
+```bat
+setup_windows.bat        :: one-time setup
+build_windows.bat        :: produces dist\GabaMic\GabaMic.exe
+```
+
+Zip `dist\GabaMic\` and it is ready to distribute — no installer, no Python required
+for the end user.

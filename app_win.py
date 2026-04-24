@@ -3,14 +3,10 @@
 Hold Alt+S anywhere to record. Release to transcribe and inject the text
 into whatever application / text box is currently focused.
 
-Requirements (in addition to the base requirements.txt):
-    pip install pywebview>=4.0.2
-
-Transparency requires WebView2, which ships by default on Windows 10 (since
-KB4577586) and all versions of Windows 11.
+Requirements: pip install -r requirements_win.txt
 
 Usage:
-    python app_win.py
+    python app_win.py          (or double-click GabaMic.bat)
     Right-click the pill to quit.
 """
 
@@ -18,6 +14,7 @@ import ctypes
 import json
 import pathlib
 import platform
+import sys
 import threading
 import time
 
@@ -29,7 +26,20 @@ from gabamic.hotkey import HotkeyListener
 from gabamic.injector import TextInjector
 from gabamic.transcriber import Transcriber
 
-CONFIG_PATH = pathlib.Path(__file__).parent / "config.json"
+
+def _base_dir() -> pathlib.Path:
+    """Return the directory that contains config.json.
+
+    Works both when running as a plain Python script and when frozen by
+    PyInstaller into a one-directory bundle (sys.frozen is True in that case,
+    and sys.executable points to GabaMic.exe inside the dist folder).
+    """
+    if getattr(sys, "frozen", False):
+        return pathlib.Path(sys.executable).parent
+    return pathlib.Path(__file__).parent
+
+
+CONFIG_PATH = _base_dir() / "config.json"
 PILL_W, PILL_H = 240, 44
 
 # ---------------------------------------------------------------------------
@@ -98,7 +108,7 @@ html, body {
   }
 }
 
-/* ── Recording / transcribing / done: dot + text ──────────────────── */
+/* ── Recording / transcribing / loading / done: dot + text ────────── */
 .status-row {
   display: none;
   align-items: center;
@@ -111,6 +121,7 @@ html, body {
 }
 .dot.recording    { background: #FF6200; animation: pulse .9s ease-in-out infinite; }
 .dot.transcribing { background: rgba(255,98,0,.70); animation: pulse .9s ease-in-out infinite; }
+.dot.loading      { background: rgba(0,255,239,.50); animation: pulse 1.4s ease-in-out infinite; }
 .dot.done         { background: #00FFEF; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 
@@ -170,6 +181,8 @@ function setState(state, text) {
     statusText.textContent = 'Recording\u2026';
   } else if (state === 'transcribing') {
     statusText.textContent = 'Transcribing\u2026';
+  } else if (state === 'loading') {
+    statusText.textContent = text || 'Setting up\u2026';
   } else if (state === 'done') {
     const preview = text.length > 28 ? text.slice(0, 28) + '\u2026' : (text || 'Done');
     statusText.textContent = preview;
@@ -201,7 +214,7 @@ class _PillApi:
 
 
 # ---------------------------------------------------------------------------
-# Application
+# Helpers
 # ---------------------------------------------------------------------------
 
 def load_config() -> dict:
@@ -209,25 +222,41 @@ def load_config() -> dict:
         return json.load(f)
 
 
+def _model_is_cached(model_size: str) -> bool:
+    """Return True if the Whisper model is already in the local HuggingFace cache."""
+    cache_dir = pathlib.Path.home() / ".cache" / "huggingface" / "hub"
+    pattern = f"models--Systran--faster-whisper-{model_size}"
+    return any(cache_dir.glob(f"{pattern}*"))
+
+
+def _show_error(title: str, message: str) -> None:
+    """Show a native Windows message-box error dialog."""
+    try:
+        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)  # MB_ICONERROR
+    except Exception:
+        pass  # non-Windows (e.g. dev/test on macOS)
+
+
+# ---------------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------------
+
 class GabaMicWin:
 
     def __init__(self) -> None:
         cfg = load_config()
+        self._cfg = cfg
 
         self._recorder = AudioRecorder(
             sample_rate           = cfg.get("sample_rate", 16000),
             silence_rms_threshold = cfg.get("silence_rms_threshold", 0.01),
             min_recording_seconds = cfg.get("min_recording_seconds", 0.5),
         )
-        self._transcriber = Transcriber(
-            model_size   = cfg.get("model_size", "base"),
-            device       = cfg.get("device", "cpu"),
-            compute_type = cfg.get("compute_type", "int8"),
-            language     = cfg.get("language"),
-        )
+        self._transcriber: Transcriber | None = None   # loaded lazily after UI appears
         self._injector = TextInjector()
         self._window: webview.Window | None = None
         self._ready = False
+        self._hotkey: HotkeyListener | None = None
 
     # ------------------------------------------------------------------
     # UI helpers  (thread-safe — pywebview queues evaluate_js internally)
@@ -239,14 +268,66 @@ class GabaMicWin:
             self._window.evaluate_js(js)
 
     # ------------------------------------------------------------------
+    # Background initialisation  (runs after the pill window has loaded)
+    # ------------------------------------------------------------------
+
+    def _setup(self) -> None:
+        """Load the Whisper model and start the hotkey listener.
+
+        Runs in a daemon thread so the pill window is visible and responsive
+        while the model loads (or downloads on first run).
+        """
+        cfg = self._cfg
+        model_size = cfg.get("model_size", "base")
+
+        if _model_is_cached(model_size):
+            self._set_state("loading", "Loading model\u2026")
+        else:
+            self._set_state("loading", "Downloading model\u2026")
+
+        try:
+            self._transcriber = Transcriber(
+                model_size   = model_size,
+                device       = cfg.get("device", "cpu"),
+                compute_type = cfg.get("compute_type", "int8"),
+                language     = cfg.get("language"),
+            )
+        except Exception as exc:
+            self._set_state("loading", "Load failed!")
+            _show_error(
+                "GabaMic — Model Error",
+                f"Failed to load the Whisper model:\n\n{exc}\n\n"
+                "Check your internet connection and restart.",
+            )
+            return
+
+        # Warmup pass — JIT compiles the model so the first real transcription is fast
+        self._set_state("loading", "Warming up\u2026")
+        self._transcriber.transcribe(np.zeros(16000, dtype=np.float32))
+
+        self._hotkey = HotkeyListener(
+            on_start = self._on_start,
+            on_stop  = self._on_stop,
+            modifier = cfg.get("hotkey_modifier", "alt"),
+            key      = cfg.get("hotkey_key", "s"),
+        )
+        self._hotkey.start()
+
+        self._set_state("idle")
+
+    # ------------------------------------------------------------------
     # Hotkey callbacks  (daemon threads)
     # ------------------------------------------------------------------
 
     def _on_start(self) -> None:
+        if self._transcriber is None:
+            return  # still initialising
         self._recorder.start()
         self._set_state("recording")
 
     def _on_stop(self) -> None:
+        if self._transcriber is None:
+            return
         audio = self._recorder.stop()
 
         if len(audio) == 0:
@@ -259,7 +340,6 @@ class GabaMicWin:
         if text:
             self._injector.inject(text)
             self._set_state("done", text)
-            # Return to idle after 2.5 s
             threading.Thread(target=self._reset_idle, daemon=True).start()
         else:
             self._set_state("idle")
@@ -273,8 +353,6 @@ class GabaMicWin:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        cfg = load_config()
-
         # Screen position: centre-bottom, above the taskbar
         if platform.system() == "Windows":
             user32 = ctypes.windll.user32
@@ -286,24 +364,6 @@ class GabaMicWin:
         x = (sw - PILL_W) // 2
         y = sh - PILL_H - 80
 
-        # Warm up Whisper in background before first real use
-        threading.Thread(
-            target=lambda: self._transcriber.transcribe(
-                np.zeros(16000, dtype=np.float32)
-            ),
-            daemon=True,
-        ).start()
-
-        # Hotkey listener (non-blocking background thread)
-        hotkey = HotkeyListener(
-            on_start = self._on_start,
-            on_stop  = self._on_stop,
-            modifier = cfg.get("hotkey_modifier", "alt"),
-            key      = cfg.get("hotkey_key", "s"),
-        )
-        hotkey.start()
-
-        # Create the pill window
         self._window = webview.create_window(
             title            = "",
             html             = _PILL_HTML,
@@ -320,20 +380,32 @@ class GabaMicWin:
 
         def _on_loaded():
             self._ready = True
+            # Kick off heavy initialisation in background so the window stays responsive
+            threading.Thread(target=self._setup, daemon=True).start()
 
         self._window.events.loaded += _on_loaded
 
-        print("GabaMic pill started.  Hold Alt+S to dictate.  Right-click to quit.")
+        print("GabaMic starting.  Hold Alt+S to dictate once ready.  Right-click to quit.")
 
         # Start pywebview — blocks until the window is closed
         webview.start(api=_PillApi(), private_mode=False)
 
-        hotkey.stop()
+        if self._hotkey:
+            self._hotkey.stop()
 
 
 def main() -> None:
-    app = GabaMicWin()
-    app.run()
+    try:
+        app = GabaMicWin()
+        app.run()
+    except Exception as exc:
+        _show_error(
+            "GabaMic — Startup Error",
+            f"GabaMic failed to start:\n\n{exc}\n\n"
+            "Make sure all requirements are installed:\n"
+            "  pip install -r requirements_win.txt",
+        )
+        raise
 
 
 if __name__ == "__main__":
