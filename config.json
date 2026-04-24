@@ -1,0 +1,11 @@
+{
+  "model_size": "base",
+  "language": null,
+  "device": "cpu",
+  "compute_type": "int8",
+  "sample_rate": 16000,
+  "hotkey_modifier": "alt",
+  "hotkey_key": "s",
+  "silence_rms_threshold": 0.01,
+  "min_recording_seconds": 0.5
+}
