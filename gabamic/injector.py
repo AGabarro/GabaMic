@@ -26,8 +26,9 @@ class TextInjector:
     def inject(self, text: str) -> None:
         """Paste *text* into the currently focused application.
 
-        Saves and restores the clipboard around the operation so the
-        user's prior clipboard contents are preserved.
+        Copies text to the clipboard, simulates the OS paste shortcut, then
+        leaves the transcribed text in the clipboard so the user can paste it
+        again wherever they like.
 
         Args:
             text: The string to inject. If empty, returns immediately.
@@ -35,14 +36,11 @@ class TextInjector:
         if not text:
             return
 
-        saved = pyperclip.paste()
-        try:
-            pyperclip.copy(text)
-            time.sleep(0.05)
-            self._keyboard.press(_PASTE_KEY)
-            self._keyboard.press("v")
-            self._keyboard.release("v")
-            self._keyboard.release(_PASTE_KEY)
-            time.sleep(0.1)
-        finally:
-            pyperclip.copy(saved)
+        pyperclip.copy(text)
+        time.sleep(0.05)
+        self._keyboard.press(_PASTE_KEY)
+        self._keyboard.press("v")
+        self._keyboard.release("v")
+        self._keyboard.release(_PASTE_KEY)
+        time.sleep(0.1)
+        # text intentionally left in clipboard so the user can paste it again
