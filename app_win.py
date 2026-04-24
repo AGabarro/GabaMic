@@ -301,36 +301,39 @@ function setState(state, text) {
 }
 
 // ── Drag to move ────────────────────────────────────────────────────
-// Movement > DRAG_PX calls start_drag() which snapshots the cursor/window
-// positions and hands tracking to a Win32 cursor-tracking loop.
-// Click is detected on mouseup when no drag was triggered.
-let _pressing = false, _dragged = false;
-let _startX, _startY;
-const DRAG_PX = 4;
+// On every mousemove while the left button is held, send the delta
+// (screenX/screenY, not clientX/clientY) to Python via api.move_by().
+// Python accumulates the position and calls window.move() — pywebview's
+// own API — which dispatches to the WebView2 UI thread correctly.
+// Click is detected on the pill's click event, suppressed after a drag.
+let _dragX, _dragY, _dragged = false;
+const DRAG_PX = 3;
 
 pill.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
-  _pressing = true; _dragged = false;
-  _startX = e.clientX; _startY = e.clientY;
+  _dragX = e.screenX; _dragY = e.screenY; _dragged = false;
+  document.body.style.cursor = 'grabbing';
   e.preventDefault();
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (!_pressing || e.buttons !== 1) return;
-  if (!_dragged && (
-    Math.abs(e.clientX - _startX) >= DRAG_PX ||
-    Math.abs(e.clientY - _startY) >= DRAG_PX
-  )) {
-    _dragged = true;
-    _pressing = false;
-    window.pywebview?.api?.start_drag();   // Win32 takes over from here
-  }
+  if (e.buttons !== 1 || _dragX === undefined) return;
+  const dx = e.screenX - _dragX, dy = e.screenY - _dragY;
+  if (!_dragged && Math.abs(dx) < DRAG_PX && Math.abs(dy) < DRAG_PX) return;
+  _dragged = true;
+  window.pywebview?.api?.move_by(dx, dy);
+  _dragX = e.screenX; _dragY = e.screenY;
 });
 
-document.addEventListener('mouseup', (e) => {
-  if (e.button !== 0) return;
-  if (_pressing && !_dragged) window.pywebview?.api?.toggle();
-  _pressing = false; _dragged = false;
+document.addEventListener('mouseup', () => {
+  _dragX = undefined;
+  document.body.style.cursor = '';
+});
+
+// Left-click: toggle recording (suppressed when the gesture was a drag)
+pill.addEventListener('click', () => {
+  if (_dragged) { _dragged = false; return; }
+  window.pywebview?.api?.toggle();
 });
 
 // Right-click: quit
@@ -362,9 +365,9 @@ class _PillApi:
         if webview.windows:
             webview.windows[0].destroy()
 
-    def start_drag(self) -> None:
-        """Called from JS when a drag gesture is recognised; hands off to Win32."""
-        self._app.start_drag()
+    def move_by(self, dx: float, dy: float) -> None:
+        """Called from JS on every drag mousemove; shifts the window by (dx, dy)."""
+        self._app.move_by(int(dx), int(dy))
 
 
 # ---------------------------------------------------------------------------
@@ -539,8 +542,9 @@ class GabaMicWin:
         self._ready = False
         self._hotkey: HotkeyListener | None = None
         self._recording = False           # shared between click-toggle and hotkey
-        self._hwnd: int = 0               # cached Win32 HWND (set after window loads)
-        self._dragging = False            # True while _drag_loop thread is running
+        self._hwnd: int = 0               # cached Win32 HWND (transparency + icon only)
+        self._win_x: int = 0              # tracked window position for move_by
+        self._win_y: int = 0
 
     # ------------------------------------------------------------------
     # UI helpers  (thread-safe — pywebview queues evaluate_js internally)
@@ -637,79 +641,19 @@ class GabaMicWin:
         _apply_win32_transparency(hwnd)
         _set_window_icon(hwnd)
 
-    def start_drag(self) -> None:
-        """Start moving the pill by tracking the cursor in a background thread.
+    def move_by(self, dx: int, dy: int) -> None:
+        """Shift the pill window by (dx, dy) CSS pixels.
 
-        Called from JS once a drag gesture exceeds the movement threshold.
-
-        WM_NCLBUTTONDOWN+HTCAPTION does NOT work for pywebview frameless windows:
-        they are created as WS_POPUP (no WS_CAPTION), so DefWindowProc ignores
-        the HTCAPTION hit-test and never enters its drag loop.
-
-        We snapshot cursor and window position HERE (before spawning the thread)
-        so the reference coordinates are captured with the minimum possible delay
-        after the JS drag gesture fires.  The grab-point offset (cursor position
-        relative to the window's top-left corner) is passed to _drag_loop so the
-        cursor stays locked to the same spot on the pill for the entire drag.
+        Called from JS on every mousemove during a drag.  Uses pywebview's own
+        window.move() API, which dispatches to the WebView2 UI thread — the only
+        reliable way to reposition a WebView2-hosted frameless window.
+        Raw Win32 SetWindowPos from a background thread does not work correctly
+        with WebView2's compositor.
         """
-        if not self._hwnd or self._dragging:
-            return
-
-        # Snapshot positions synchronously — before thread-startup overhead.
-        try:
-            import ctypes.wintypes
-            user32 = ctypes.windll.user32
-
-            cur = ctypes.wintypes.POINT()
-            user32.GetCursorPos(ctypes.byref(cur))
-
-            rect = (ctypes.c_long * 4)()
-            user32.GetWindowRect(self._hwnd, rect)
-
-            # How far inside the window the user is holding the pill.
-            offset_x = cur.x - rect[0]
-            offset_y = cur.y - rect[1]
-        except Exception:
-            offset_x = offset_y = 0
-
-        self._dragging = True
-        threading.Thread(
-            target=self._drag_loop,
-            args=(offset_x, offset_y),
-            daemon=True,
-        ).start()
-
-    def _drag_loop(self, offset_x: int = 0, offset_y: int = 0) -> None:
-        """Move the window to follow the cursor until the left button is released.
-
-        The window is positioned so that the cursor stays at (offset_x, offset_y)
-        from the window's top-left corner — the same grab-point the user clicked.
-        All coordinates are Win32 physical pixels; DPI scaling is therefore
-        consistent regardless of the display's scale factor.
-        """
-        try:
-            import ctypes.wintypes
-            user32       = ctypes.windll.user32
-            VK_LBUTTON   = 0x01
-            SWP_NOSIZE   = 0x0001
-            SWP_NOZORDER = 0x0004
-            SWP_NOACT    = 0x0010
-
-            while user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000:
-                cn = ctypes.wintypes.POINT()
-                user32.GetCursorPos(ctypes.byref(cn))
-                user32.SetWindowPos(
-                    self._hwnd, 0,
-                    cn.x - offset_x,
-                    cn.y - offset_y,
-                    0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACT,
-                )
-                time.sleep(0.008)   # ~120 fps cap
-        except Exception:
-            pass
-        finally:
-            self._dragging = False
+        self._win_x += dx
+        self._win_y += dy
+        if self._window:
+            self._window.move(self._win_x, self._win_y)
 
     # ------------------------------------------------------------------
     # Click-to-toggle (called from JS via _PillApi.toggle)
@@ -761,6 +705,7 @@ class GabaMicWin:
 
         x = (sw - PILL_W) // 2
         y = sh - PILL_H - 80
+        self._win_x, self._win_y = x, y   # seed position tracker for move_by
 
         is_win = platform.system() == "Windows"
 
