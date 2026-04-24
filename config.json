@@ -1,8 +1,8 @@
 {
-  "model_size": "base",
+  "model_size": "small",
   "language": null,
   "device": "cpu",
-  "compute_type": "int8",
+  "compute_type": "int8_float32",
   "sample_rate": 16000,
   "hotkey_modifier": "alt",
   "hotkey_key": "s",
