@@ -14,6 +14,7 @@ import ctypes
 import json
 import pathlib
 import platform
+import shutil
 import sys
 import threading
 import time
@@ -27,19 +28,34 @@ from gabamic.injector import TextInjector
 from gabamic.transcriber import Transcriber
 
 
-def _base_dir() -> pathlib.Path:
-    """Return the directory that contains config.json.
+def _find_config() -> pathlib.Path:
+    """Locate config.json for both a plain script run and a PyInstaller bundle.
 
-    Works both when running as a plain Python script and when frozen by
-    PyInstaller into a one-directory bundle (sys.frozen is True in that case,
-    and sys.executable points to GabaMic.exe inside the dist folder).
+    PyInstaller 6+ onedir layout:
+        GabaMic.exe          ← sys.executable
+        _internal/           ← sys._MEIPASS  (all bundled files land here)
+            config.json
+            *.pyd / *.dll
+            ...
+
+    We want config.json to sit next to GabaMic.exe so the user can edit it.
+    On the very first launch we copy the bundled default out of _internal/.
+    Every subsequent launch reads the (possibly user-edited) copy beside the exe.
     """
     if getattr(sys, "frozen", False):
-        return pathlib.Path(sys.executable).parent
-    return pathlib.Path(__file__).parent
+        exe_dir = pathlib.Path(sys.executable).parent
+        user_cfg = exe_dir / "config.json"
+        if not user_cfg.exists():
+            # Seed an editable copy from the bundled default inside _internal/
+            bundled = pathlib.Path(sys._MEIPASS) / "config.json"
+            if bundled.exists():
+                shutil.copy(bundled, user_cfg)
+        return user_cfg
+    # Plain Python run — config.json is next to app_win.py
+    return pathlib.Path(__file__).parent / "config.json"
 
 
-CONFIG_PATH = _base_dir() / "config.json"
+CONFIG_PATH = _find_config()
 PILL_W, PILL_H = 240, 44
 
 # ---------------------------------------------------------------------------
