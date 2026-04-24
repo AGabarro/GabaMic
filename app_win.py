@@ -300,35 +300,37 @@ function setState(state, text) {
   }
 }
 
-// ── Drag to move ───────────────────────────────────────────────────
-let _dragX, _dragY, _dragged = false;
-const DRAG_PX = 3;   // pixels of movement before a drag is recognised
+// ── Drag to move (Win32 native drag) ───────────────────────────────
+// On movement > DRAG_PX we hand the drag to Win32 (WM_NCLBUTTONDOWN +
+// HTCAPTION) so the OS moves the window without DPI or delta-accumulation
+// issues.  Click is detected on mouseup when no drag was triggered.
+let _pressing = false, _dragged = false;
+let _startX, _startY;
+const DRAG_PX = 4;
 
 pill.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
-  _dragX = e.screenX; _dragY = e.screenY; _dragged = false;
-  document.body.style.cursor = 'grabbing';
+  _pressing = true; _dragged = false;
+  _startX = e.clientX; _startY = e.clientY;
   e.preventDefault();
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (e.buttons !== 1 || _dragX === undefined) return;
-  const dx = e.screenX - _dragX, dy = e.screenY - _dragY;
-  if (!_dragged && Math.abs(dx) < DRAG_PX && Math.abs(dy) < DRAG_PX) return;
-  _dragged = true;
-  window.pywebview?.api?.move_by(dx, dy);
-  _dragX = e.screenX; _dragY = e.screenY;
+  if (!_pressing || e.buttons !== 1) return;
+  if (!_dragged && (
+    Math.abs(e.clientX - _startX) >= DRAG_PX ||
+    Math.abs(e.clientY - _startY) >= DRAG_PX
+  )) {
+    _dragged = true;
+    _pressing = false;
+    window.pywebview?.api?.start_drag();   // Win32 takes over from here
+  }
 });
 
-document.addEventListener('mouseup', () => {
-  _dragX = undefined;
-  document.body.style.cursor = '';
-});
-
-// Left-click: toggle recording (suppressed if the gesture was a drag)
-pill.addEventListener('click', () => {
-  if (_dragged) { _dragged = false; return; }
-  window.pywebview?.api?.toggle();
+document.addEventListener('mouseup', (e) => {
+  if (e.button !== 0) return;
+  if (_pressing && !_dragged) window.pywebview?.api?.toggle();
+  _pressing = false; _dragged = false;
 });
 
 // Right-click: quit
@@ -360,9 +362,9 @@ class _PillApi:
         if webview.windows:
             webview.windows[0].destroy()
 
-    def move_by(self, dx: float, dy: float) -> None:
-        """Drag: shift the pill window by (dx, dy) pixels."""
-        self._app.move_by(int(round(dx)), int(round(dy)))
+    def start_drag(self) -> None:
+        """Called from JS when a drag gesture is recognised; hands off to Win32."""
+        self._app.start_drag()
 
 
 # ---------------------------------------------------------------------------
@@ -464,14 +466,14 @@ def _find_pill_hwnd(win_title: str) -> int:
     return found.value
 
 
-def _apply_win32_transparency() -> None:
+def _apply_win32_transparency(hwnd: int) -> None:
     """Apply chroma-key transparency to the pill window on Windows.
 
-    Locates the pill HWND, upgrades it to a layered window, and registers
-    _CHROMA_CSS (#000001) as the transparent colour.  The pill's HTML body
-    background is set to #000001 by Python before this call, so those
-    pixels are invisible at the OS compositor level — only the pill shape
-    (and its drop-shadow) remains visible on the desktop.
+    Upgrades the window to a layered window and registers _CHROMA_CSS
+    (#000001) as the transparent colour.  The pill's HTML body background
+    is set to #000001 by Python before this call, so those pixels are
+    invisible at the OS compositor level — only the pill shape (and its
+    drop-shadow) remains visible on the desktop.
     """
     if platform.system() != "Windows":
         return
@@ -481,9 +483,6 @@ def _apply_win32_transparency() -> None:
         LWA_COLORKEY  = 0x00000001
 
         user32 = ctypes.windll.user32
-        hwnd   = _find_pill_hwnd(_PILL_TITLE)
-        if not hwnd:
-            return
         ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
         user32.SetLayeredWindowAttributes(hwnd, _CHROMA_REF, 0, LWA_COLORKEY)
@@ -491,12 +490,8 @@ def _apply_win32_transparency() -> None:
         pass  # transparency is cosmetic — never crash on failure
 
 
-def _set_window_icon() -> None:
-    """Stamp the GabaMic logo onto the pill window in the Windows taskbar.
-
-    Uses _find_pill_hwnd so it retries until the window is addressable.
-    Runs in a daemon thread — never blocks startup.
-    """
+def _set_window_icon(hwnd: int) -> None:
+    """Stamp the GabaMic logo onto the pill window in the Windows taskbar."""
     if platform.system() != "Windows":
         return
     ico_path = _find_icon()
@@ -510,9 +505,6 @@ def _set_window_icon() -> None:
         LR_LOADFROMFILE = 0x00000010
 
         user32  = ctypes.windll.user32
-        hwnd    = _find_pill_hwnd(_PILL_TITLE)
-        if not hwnd:
-            return
         ico_str = str(ico_path)
         hicon_big = user32.LoadImageW(None, ico_str, IMAGE_ICON, 32, 32,
                                        LR_LOADFROMFILE)
@@ -547,8 +539,7 @@ class GabaMicWin:
         self._ready = False
         self._hotkey: HotkeyListener | None = None
         self._recording = False           # shared between click-toggle and hotkey
-        self._win_x = 0                   # tracked position for drag-to-move
-        self._win_y = 0
+        self._hwnd: int = 0               # cached Win32 HWND (set after window loads)
 
     # ------------------------------------------------------------------
     # UI helpers  (thread-safe — pywebview queues evaluate_js internally)
@@ -636,12 +627,31 @@ class GabaMicWin:
         time.sleep(2.5)
         self._set_state("idle")
 
-    def move_by(self, dx: int, dy: int) -> None:
-        """Shift the window by (dx, dy) pixels relative to its current position."""
-        self._win_x += dx
-        self._win_y += dy
-        if self._window:
-            self._window.move(self._win_x, self._win_y)
+    def _win32_setup(self) -> None:
+        """Find the pill HWND once and apply all Win32 customisations in one thread."""
+        hwnd = _find_pill_hwnd(_PILL_TITLE)
+        if not hwnd:
+            return
+        self._hwnd = hwnd
+        _apply_win32_transparency(hwnd)
+        _set_window_icon(hwnd)
+
+    def start_drag(self) -> None:
+        """Initiate a native Win32 window drag (WM_NCLBUTTONDOWN + HTCAPTION).
+
+        Called from JS once a drag gesture exceeds the movement threshold.
+        Windows takes over mouse tracking from that point — smooth, no DPI
+        issues, no JS delta accumulation.
+        """
+        if not self._hwnd:
+            return
+        try:
+            user32 = ctypes.windll.user32
+            # WM_NCLBUTTONDOWN = 0x00A1, HTCAPTION = 2
+            # PostMessageW is async so the bridge thread is not blocked during drag.
+            user32.PostMessageW(self._hwnd, 0x00A1, 2, 0)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Click-to-toggle (called from JS via _PillApi.toggle)
@@ -684,7 +694,6 @@ class GabaMicWin:
 
         x = (sw - PILL_W) // 2
         y = sh - PILL_H - 80
-        self._win_x, self._win_y = x, y   # seed position tracker for drag-to-move
 
         is_win = platform.system() == "Windows"
 
@@ -713,14 +722,13 @@ class GabaMicWin:
         def _on_loaded():
             self._ready = True
             if platform.system() == "Windows":
-                # Paint the body with the chroma-key colour so Win32 can key it out.
-                # evaluate_js is async; Win32 sees the colour on the next rendered frame.
+                # Paint body with the chroma-key colour so Win32 can key it out.
                 self._window.evaluate_js(
                     "document.documentElement.style.background='" + _CHROMA_CSS + "';"
                     "document.body.style.background='" + _CHROMA_CSS + "';"
                 )
-                threading.Thread(target=_apply_win32_transparency, daemon=True).start()
-            threading.Thread(target=_set_window_icon, daemon=True).start()
+                # Find HWND once, then apply transparency + icon in one thread.
+                threading.Thread(target=self._win32_setup, daemon=True).start()
             threading.Thread(target=self._setup, daemon=True).start()
 
         self._window.events.loaded += _on_loaded
