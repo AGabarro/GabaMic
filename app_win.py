@@ -49,7 +49,10 @@ def _find_config() -> pathlib.Path:
 
 
 CONFIG_PATH = _find_config()
-PILL_W, PILL_H = 170, 34
+PILL_W, PILL_H  = 140, 38        # window size (includes transparent glow margin)
+_PILL_TITLE     = "GabaMicPill"  # hidden title used by FindWindowW for transparency
+_CHROMA_CSS     = "#000001"      # near-black chroma-key colour (body bg → OS-transparent)
+_CHROMA_REF     = 0x10000        # COLORREF for #000001: R=0,G=0,B=1 → 0|(0<<8)|(1<<16)
 
 
 # ---------------------------------------------------------------------------
@@ -65,27 +68,63 @@ _PILL_HTML = """\
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
-  width: 170px; height: 34px;
-  background: #080B14;
+  width: 140px; height: 38px;
+  background: #000001;   /* chroma-key — made OS-transparent at runtime via ctypes */
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+/* ── Outer wrapper: owns external drop-shadow glow ───────────────── */
+.pill-glow {
+  will-change: filter;
+  filter: drop-shadow(0 0 6px rgba(0,255,239,0.42));
+  transition: filter 0.38s cubic-bezier(0.4,0,0.2,1);
+}
+.pill-glow.is-recording {
+  animation: glow-rec 1.35s ease-in-out infinite;
+}
+.pill-glow.is-transcribing {
+  filter: drop-shadow(0 0 6px rgba(255,98,0,0.45));
+}
+@keyframes glow-rec {
+  0%,100% { filter: drop-shadow(0 0  9px rgba(255,98,0,0.85)); }
+  50%     { filter: drop-shadow(0 0 16px rgba(255,98,0,1.00)); }
+}
+
+/* ── Pill shell ──────────────────────────────────────────────────── */
 .pill {
-  width: 170px; height: 34px;
-  background: rgba(8, 11, 20, 0.96);
-  border: 1px solid rgba(0, 255, 239, 0.25);
-  border-radius: 17px;
+  width: 118px; height: 24px;
+  background: linear-gradient(150deg, rgba(8,11,20,.98) 0%, rgba(11,15,28,.98) 100%);
+  border: 1.5px solid rgba(0,255,239,0.50);
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
   user-select: none;
   cursor: pointer;
-  transition: border-color 0.18s;
+  position: relative;
+  transition:
+    border-color 0.38s cubic-bezier(0.4,0,0.2,1),
+    box-shadow   0.38s cubic-bezier(0.4,0,0.2,1);
+  box-shadow: inset 0 0 10px rgba(0,255,239,0.05);
 }
-.pill:hover  { border-color: rgba(0, 255, 239, 0.50); }
-.pill:active { border-color: rgba(0, 255, 239, 0.75); }
+.pill:hover {
+  border-color: rgba(0,255,239,0.75);
+  box-shadow: inset 0 0 10px rgba(0,255,239,0.09);
+}
+.pill.is-recording {
+  border-color: #FF6200;
+  box-shadow: inset 0 0 12px rgba(255,98,0,0.12);
+  cursor: default;
+}
+.pill.is-transcribing {
+  border-color: rgba(255,98,0,0.55);
+  box-shadow: inset 0 0 10px rgba(255,98,0,0.07);
+}
 
 /* ── Idle: animated GabaMic logo ─────────────────────────────────── */
 .logo-stage {
@@ -95,13 +134,13 @@ html, body {
 .aura {
   position: absolute; width: 44%; height: 80%; border-radius: 50%;
   background: radial-gradient(ellipse at center,
-    rgba(0,255,239,.13) 0%, rgba(255,98,0,.07) 42%, transparent 70%);
+    rgba(0,255,239,.14) 0%, rgba(255,98,0,.06) 45%, transparent 70%);
   animation: aura 3.5s cubic-bezier(.45,0,.55,1) infinite;
   pointer-events: none;
 }
 @keyframes aura {
-  0%,100% { transform: scale(.88); opacity: .45; }
-  50%     { transform: scale(1.12); opacity: .9; }
+  0%,100% { transform: scale(.88); opacity: .50; }
+  50%     { transform: scale(1.12); opacity: .95; }
 }
 .logo-svg {
   position: relative; height: 60%; width: auto;
@@ -110,49 +149,79 @@ html, body {
 }
 @keyframes breathe {
   0%,100% {
-    filter: drop-shadow(0 0 3px rgba(0,255,239,.25));
+    filter: drop-shadow(0 0 2px rgba(0,255,239,.32));
     transform: scale(.97);
   }
   50% {
-    filter: drop-shadow(0 0 9px rgba(0,255,239,.55))
-            drop-shadow(0 0 20px rgba(255,98,0,.28));
+    filter: drop-shadow(0 0 6px  rgba(0,255,239,.72))
+            drop-shadow(0 0 14px rgba(0,255,239,.28));
     transform: scale(1.04);
   }
 }
 
-/* ── Status row (recording / transcribing / loading / done) ────────── */
+/* ── Status row ──────────────────────────────────────────────────── */
 .status-row {
   display: none;
   align-items: center;
-  gap: 7px;
-  padding: 0 14px;
+  gap: 6px;
+  padding: 0 9px;
   width: 100%;
 }
-.dot {
-  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-}
-.dot.recording    { background: #FF6200; animation: pulse .9s ease-in-out infinite; }
-.dot.transcribing { background: rgba(255,98,0,.70); animation: pulse .9s ease-in-out infinite; }
-.dot.loading      { background: rgba(0,255,239,.50); animation: pulse 1.4s ease-in-out infinite; }
-.dot.done         { background: #00FFEF; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 
-.status-text {
-  font-size: 11px; font-weight: 500; color: #00FFEF;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+/* Waveform bars — recording only */
+.waveform {
+  display: flex; align-items: center; gap: 1.5px; flex-shrink: 0;
 }
+.wbar {
+  width: 2px; border-radius: 2px;
+  background: #FF6200;
+  box-shadow: 0 0 3px rgba(255,98,0,0.85);
+}
+.wbar:nth-child(1) { animation: wave .88s ease-in-out -0.38s infinite; }
+.wbar:nth-child(2) { animation: wave .88s ease-in-out -0.18s infinite; }
+.wbar:nth-child(3) { animation: wave .88s ease-in-out  0.02s infinite; }
+.wbar:nth-child(4) { animation: wave .88s ease-in-out -0.28s infinite; }
+@keyframes wave {
+  0%,100% { height: 3px;  opacity: .60; }
+  50%     { height: 10px; opacity: 1.0; }
+}
+
+/* Status dot */
+.dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+.dot.transcribing {
+  background: rgba(255,98,0,.80);
+  box-shadow: 0 0 4px rgba(255,98,0,.65);
+  animation: pulse .88s ease-in-out infinite;
+}
+.dot.loading { background: rgba(0,255,239,.55); animation: pulse 1.4s ease-in-out infinite; }
+.dot.done    { background: #00FFEF; box-shadow: 0 0 5px rgba(0,255,239,.65); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.28} }
+
+/* Status label */
+.status-text {
+  font-size: 10px; font-weight: 500; letter-spacing: 0.1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #00FFEF;
+  transition: color 0.32s ease;
+}
+.status-text.rec { color: #FF7030; }
+.status-text.trx { color: rgba(255,135,55,.88); }
 </style>
 </head>
 <body>
+
+<!-- Outer wrapper: owns the external glow via filter: drop-shadow -->
+<div class="pill-glow" id="pill-glow">
 <div class="pill" id="pill">
 
+  <!-- Idle view: breathing logo -->
   <div class="logo-stage" id="idle-view">
     <div class="aura"></div>
     <svg class="logo-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <linearGradient id="g" x1="15" y1="185" x2="185" y2="15"
                         gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#00FFEF"/>
+          <stop offset="0%"   stop-color="#00FFEF"/>
           <stop offset="100%" stop-color="#FF6200"/>
         </linearGradient>
       </defs>
@@ -163,21 +232,35 @@ html, body {
     </svg>
   </div>
 
+  <!-- Status view: recording / transcribing / loading / done -->
   <div class="status-row" id="status-view">
+    <div class="waveform" id="waveform">
+      <div class="wbar"></div>
+      <div class="wbar"></div>
+      <div class="wbar"></div>
+      <div class="wbar"></div>
+    </div>
     <div class="dot" id="dot"></div>
     <span class="status-text" id="status-text"></span>
   </div>
 
-</div>
+</div><!-- .pill -->
+</div><!-- .pill-glow -->
 
 <script>
 'use strict';
 
+const pillGlow   = document.getElementById('pill-glow');
+const pill       = document.getElementById('pill');
+const idleView   = document.getElementById('idle-view');
+const statusView = document.getElementById('status-view');
+const waveform   = document.getElementById('waveform');
+const dot        = document.getElementById('dot');
+const statusText = document.getElementById('status-text');
+
 function setState(state, text) {
-  const idleView   = document.getElementById('idle-view');
-  const statusView = document.getElementById('status-view');
-  const dot        = document.getElementById('dot');
-  const statusText = document.getElementById('status-text');
+  pill.classList.remove('is-recording', 'is-transcribing');
+  pillGlow.classList.remove('is-recording', 'is-transcribing');
 
   if (state === 'idle') {
     idleView.style.display   = 'flex';
@@ -187,22 +270,39 @@ function setState(state, text) {
 
   idleView.style.display   = 'none';
   statusView.style.display = 'flex';
-  dot.className = 'dot ' + state;
+  waveform.style.display   = 'none';
+  dot.style.display        = 'block';
 
   if (state === 'recording') {
+    pill.classList.add('is-recording');
+    pillGlow.classList.add('is-recording');
+    waveform.style.display = 'flex';
+    dot.style.display      = 'none';
     statusText.textContent = 'Recording\u2026';
+    statusText.className   = 'status-text rec';
+
   } else if (state === 'transcribing') {
+    pill.classList.add('is-transcribing');
+    pillGlow.classList.add('is-transcribing');
+    dot.className          = 'dot transcribing';
     statusText.textContent = 'Transcribing\u2026';
+    statusText.className   = 'status-text trx';
+
   } else if (state === 'loading') {
+    dot.className          = 'dot loading';
     statusText.textContent = text || 'Setting up\u2026';
+    statusText.className   = 'status-text';
+
   } else if (state === 'done') {
-    const preview = text.length > 20 ? text.slice(0, 20) + '\u2026' : (text || 'Done');
+    dot.className = 'dot done';
+    const preview = text && text.length > 14 ? text.slice(0, 14) + '\u2026' : (text || 'Done');
     statusText.textContent = preview;
+    statusText.className   = 'status-text';
   }
 }
 
 // Left-click: toggle recording
-document.getElementById('pill').addEventListener('click', () => {
+pill.addEventListener('click', () => {
   if (window.pywebview && window.pywebview.api) {
     window.pywebview.api.toggle();
   }
@@ -277,6 +377,30 @@ def _show_error(title: str, message: str) -> None:
         ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
     except Exception:
         print(f"ERROR — {title}\n{message}", file=sys.stderr)
+
+
+def _apply_transparency(win_title: str, chroma_ref: int) -> None:
+    """Make the pywebview window background OS-transparent via Win32 color-key.
+
+    Pixels painted with the chroma-key colour (_CHROMA_CSS / _CHROMA_REF)
+    become fully transparent at the compositor level, so only the pill shape
+    (and its drop-shadow glow) is visible on the desktop.
+    """
+    if platform.system() != "Windows":
+        return
+    try:
+        GWL_EXSTYLE   = -20
+        WS_EX_LAYERED = 0x00080000
+        LWA_COLORKEY  = 0x00000001
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, win_title)
+        if not hwnd:
+            return
+        ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
+        user32.SetLayeredWindowAttributes(hwnd, chroma_ref, 0, LWA_COLORKEY)
+    except Exception:
+        pass  # transparency is cosmetic — never crash on failure
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +554,7 @@ class GabaMicWin:
         y = sh - PILL_H - 80
 
         self._window = webview.create_window(
-            title            = "",
+            title            = _PILL_TITLE,   # hidden (frameless); needed for FindWindowW
             html             = _PILL_HTML,
             js_api           = _PillApi(self),
             width            = PILL_W,
@@ -440,12 +564,13 @@ class GabaMicWin:
             resizable        = False,
             frameless        = True,
             on_top           = True,
-            background_color = "#080B14",
+            background_color = _CHROMA_CSS,   # chroma-key → transparent via ctypes
             min_size         = (PILL_W, PILL_H),
         )
 
         def _on_loaded():
             self._ready = True
+            _apply_transparency(_PILL_TITLE, _CHROMA_REF)
             threading.Thread(target=self._setup, daemon=True).start()
 
         self._window.events.loaded += _on_loaded
