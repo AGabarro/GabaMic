@@ -83,7 +83,7 @@ def test_start_drag_sets_dragging_flag_and_starts_loop():
     app = _make_app()
     loop_ran = threading.Event()
 
-    def fake_loop():
+    def fake_loop(*args):   # accepts the (offset_x, offset_y) args from start_drag
         loop_ran.set()
 
     app._drag_loop = fake_loop
@@ -176,7 +176,7 @@ def test_only_one_drag_loop_runs_at_a_time():
     loop_starts = []
     done = threading.Event()
 
-    def fake_loop(self_app):
+    def fake_loop(self_app, *args):   # bound via patch.object; receives offset args too
         loop_starts.append(1)
         done.wait(timeout=0.5)
         self_app._dragging = False

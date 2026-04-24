@@ -4,5 +4,5 @@ numpy>=1.24.0
 pyperclip>=1.8.2
 pynput>=1.7.6
 rumps>=0.4.0
-pywebview>=4.0.2
+pyobjc-framework-WebKit>=9.0
 pytest>=7.0.0

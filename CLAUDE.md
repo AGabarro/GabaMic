@@ -353,7 +353,7 @@ These caused real runtime errors on Windows — do not repeat them:
 |---|---|---|
 | `webview.start(api=_PillApi())` | `TypeError: start() got unexpected keyword argument 'api'` | Use `js_api=` on `create_window()` only |
 | `background_color="#00000000"` (8-digit hex) | `ValueError: #00000000 is not a valid hex triplet color` | Use 6-digit hex only: `"#080B14"` |
-| `-webkit-app-region: drag` on the pill div | Left-click events never reach JS | Remove drag region; dragging is not needed |
+| `-webkit-app-region: drag` on the pill div | Left-click events never reach JS | Do not use the CSS drag region. Dragging is implemented via a Win32 cursor-tracking loop — see `start_drag()` / `_drag_loop()` |
 
 ---
 

@@ -300,10 +300,10 @@ function setState(state, text) {
   }
 }
 
-// ── Drag to move (Win32 native drag) ───────────────────────────────
-// On movement > DRAG_PX we hand the drag to Win32 (WM_NCLBUTTONDOWN +
-// HTCAPTION) so the OS moves the window without DPI or delta-accumulation
-// issues.  Click is detected on mouseup when no drag was triggered.
+// ── Drag to move ────────────────────────────────────────────────────
+// Movement > DRAG_PX calls start_drag() which snapshots the cursor/window
+// positions and hands tracking to a Win32 cursor-tracking loop.
+// Click is detected on mouseup when no drag was triggered.
 let _pressing = false, _dragged = false;
 let _startX, _startY;
 const DRAG_PX = 4;
@@ -646,18 +646,47 @@ class GabaMicWin:
         they are created as WS_POPUP (no WS_CAPTION), so DefWindowProc ignores
         the HTCAPTION hit-test and never enters its drag loop.
 
-        Instead we snapshot the cursor position and window position at drag-start,
-        then loop with GetCursorPos/SetWindowPos until the left button is released.
-        All coordinates come from Win32 (physical pixels) so DPI scaling is handled
-        correctly without any JS involvement after the initial call.
+        We snapshot cursor and window position HERE (before spawning the thread)
+        so the reference coordinates are captured with the minimum possible delay
+        after the JS drag gesture fires.  The grab-point offset (cursor position
+        relative to the window's top-left corner) is passed to _drag_loop so the
+        cursor stays locked to the same spot on the pill for the entire drag.
         """
         if not self._hwnd or self._dragging:
             return
-        self._dragging = True
-        threading.Thread(target=self._drag_loop, daemon=True).start()
 
-    def _drag_loop(self) -> None:
-        """Move the window to follow the cursor until the left button is released."""
+        # Snapshot positions synchronously — before thread-startup overhead.
+        try:
+            import ctypes.wintypes
+            user32 = ctypes.windll.user32
+
+            cur = ctypes.wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(cur))
+
+            rect = (ctypes.c_long * 4)()
+            user32.GetWindowRect(self._hwnd, rect)
+
+            # How far inside the window the user is holding the pill.
+            offset_x = cur.x - rect[0]
+            offset_y = cur.y - rect[1]
+        except Exception:
+            offset_x = offset_y = 0
+
+        self._dragging = True
+        threading.Thread(
+            target=self._drag_loop,
+            args=(offset_x, offset_y),
+            daemon=True,
+        ).start()
+
+    def _drag_loop(self, offset_x: int = 0, offset_y: int = 0) -> None:
+        """Move the window to follow the cursor until the left button is released.
+
+        The window is positioned so that the cursor stays at (offset_x, offset_y)
+        from the window's top-left corner — the same grab-point the user clicked.
+        All coordinates are Win32 physical pixels; DPI scaling is therefore
+        consistent regardless of the display's scale factor.
+        """
         try:
             import ctypes.wintypes
             user32       = ctypes.windll.user32
@@ -666,21 +695,13 @@ class GabaMicWin:
             SWP_NOZORDER = 0x0004
             SWP_NOACT    = 0x0010
 
-            # Snapshot starting positions in physical pixels.
-            c0 = ctypes.wintypes.POINT()
-            user32.GetCursorPos(ctypes.byref(c0))
-
-            rect = (ctypes.c_long * 4)()
-            user32.GetWindowRect(self._hwnd, rect)
-            wx0, wy0 = rect[0], rect[1]
-
             while user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000:
                 cn = ctypes.wintypes.POINT()
                 user32.GetCursorPos(ctypes.byref(cn))
                 user32.SetWindowPos(
                     self._hwnd, 0,
-                    wx0 + (cn.x - c0.x),
-                    wy0 + (cn.y - c0.y),
+                    cn.x - offset_x,
+                    cn.y - offset_y,
                     0, 0,
                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACT,
                 )
