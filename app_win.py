@@ -50,7 +50,9 @@ def _find_config() -> pathlib.Path:
 
 CONFIG_PATH = _find_config()
 PILL_W, PILL_H = 140, 38          # window (margin lets outer drop-shadow glow render)
-_PILL_TITLE    = "GabaMicPill"   # window title (hidden; used by FindWindowW for icon)
+_PILL_TITLE    = "GabaMicPill"   # window title (hidden; used by FindWindowW for icon/transparency)
+_CHROMA_CSS    = "#000001"        # chroma-key colour injected on Windows body background
+_CHROMA_REF    = 0x10000          # COLORREF for #000001: R=0,G=0,B=1 → 0|(0<<8)|(1<<16)
 
 
 # ---------------------------------------------------------------------------
@@ -419,13 +421,81 @@ def _find_icon() -> pathlib.Path | None:
     return None
 
 
-def _set_window_icon(win_title: str) -> None:
-    """Stamp the G-logo onto the pywebview window via Win32 LoadImage/WM_SETICON.
+def _find_pill_hwnd(win_title: str) -> int:
+    """Return the HWND of the GabaMic pill window on Windows.
 
-    This makes the GabaMic icon appear in the Windows taskbar, Alt-Tab
-    switcher, and Task Manager for source builds (where there is no embedded
-    exe icon).  For PyInstaller builds the embedded exe icon already serves
-    this role, but calling this doesn't hurt — it keeps both paths consistent.
+    Two-stage lookup:
+    1. FindWindowW by title with up to ~1 s of retries (handles the race
+       between _on_loaded and the Win32 window becoming addressable).
+    2. EnumWindows by current PID + approximate pill dimensions (fallback
+       when pywebview mangles the window title internally).
+    Returns 0 if the window cannot be found.
+    """
+    if platform.system() != "Windows":
+        return 0
+    user32 = ctypes.windll.user32
+
+    # Fast path — title match, up to 15 × 100 ms = 1.5 s
+    for _ in range(15):
+        hwnd = user32.FindWindowW(None, win_title)
+        if hwnd:
+            return hwnd
+        time.sleep(0.1)
+
+    # Fallback — enumerate windows owned by this process; match by size
+    current_pid = ctypes.windll.kernel32.GetCurrentProcessId()
+    found = ctypes.c_size_t(0)
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_size_t, ctypes.c_size_t)
+    def _cb(h, _):
+        pid = ctypes.c_ulong(0)
+        user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value != current_pid or not user32.IsWindowVisible(h):
+            return True
+        rect = (ctypes.c_long * 4)()
+        user32.GetWindowRect(h, rect)
+        w, ht = rect[2] - rect[0], rect[3] - rect[1]
+        if abs(w - PILL_W) <= 40 and abs(ht - PILL_H) <= 40:
+            found.value = h
+            return False   # stop enumeration
+        return True
+
+    user32.EnumWindows(_cb, 0)
+    return found.value
+
+
+def _apply_win32_transparency() -> None:
+    """Apply chroma-key transparency to the pill window on Windows.
+
+    Locates the pill HWND, upgrades it to a layered window, and registers
+    _CHROMA_CSS (#000001) as the transparent colour.  The pill's HTML body
+    background is set to #000001 by Python before this call, so those
+    pixels are invisible at the OS compositor level — only the pill shape
+    (and its drop-shadow) remains visible on the desktop.
+    """
+    if platform.system() != "Windows":
+        return
+    try:
+        GWL_EXSTYLE   = -20
+        WS_EX_LAYERED = 0x00080000
+        LWA_COLORKEY  = 0x00000001
+
+        user32 = ctypes.windll.user32
+        hwnd   = _find_pill_hwnd(_PILL_TITLE)
+        if not hwnd:
+            return
+        ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
+        user32.SetLayeredWindowAttributes(hwnd, _CHROMA_REF, 0, LWA_COLORKEY)
+    except Exception:
+        pass  # transparency is cosmetic — never crash on failure
+
+
+def _set_window_icon() -> None:
+    """Stamp the GabaMic logo onto the pill window in the Windows taskbar.
+
+    Uses _find_pill_hwnd so it retries until the window is addressable.
+    Runs in a daemon thread — never blocks startup.
     """
     if platform.system() != "Windows":
         return
@@ -440,7 +510,7 @@ def _set_window_icon(win_title: str) -> None:
         LR_LOADFROMFILE = 0x00000010
 
         user32  = ctypes.windll.user32
-        hwnd    = user32.FindWindowW(None, win_title)
+        hwnd    = _find_pill_hwnd(_PILL_TITLE)
         if not hwnd:
             return
         ico_str = str(ico_path)
@@ -616,24 +686,41 @@ class GabaMicWin:
         y = sh - PILL_H - 80
         self._win_x, self._win_y = x, y   # seed position tracker for drag-to-move
 
+        is_win = platform.system() == "Windows"
+
         self._window = webview.create_window(
-            title        = _PILL_TITLE,   # hidden (frameless); used by FindWindowW for icon
-            html         = _PILL_HTML,
-            js_api       = _PillApi(self),
-            width        = PILL_W,
-            height       = PILL_H,
-            x            = x,
-            y            = y,
-            resizable    = False,
-            frameless    = True,
-            on_top       = True,
-            transparent  = True,          # pywebview native transparency (all platforms)
-            min_size     = (PILL_W, PILL_H),
+            title            = _PILL_TITLE,
+            html             = _PILL_HTML,
+            js_api           = _PillApi(self),
+            width            = PILL_W,
+            height           = PILL_H,
+            x                = x,
+            y                = y,
+            resizable        = False,
+            frameless        = True,
+            on_top           = True,
+            # macOS: pywebview calls setOpaque_(False) + drawsTransparentBackground.
+            # Windows: pywebview transparent support is unreliable; Win32 chroma-key
+            #          is used instead (see _on_loaded below).
+            transparent      = not is_win,
+            # Windows: seed the WebView2 background with the chroma-key colour so
+            # there is no white flash while the Win32 layered-window trick is applied.
+            # macOS: alpha is forced to 0 by transparent=True, value irrelevant.
+            background_color = _CHROMA_CSS if is_win else "#080B14",
+            min_size         = (PILL_W, PILL_H),
         )
 
         def _on_loaded():
             self._ready = True
-            _set_window_icon(_PILL_TITLE)
+            if platform.system() == "Windows":
+                # Paint the body with the chroma-key colour so Win32 can key it out.
+                # evaluate_js is async; Win32 sees the colour on the next rendered frame.
+                self._window.evaluate_js(
+                    "document.documentElement.style.background='" + _CHROMA_CSS + "';"
+                    "document.body.style.background='" + _CHROMA_CSS + "';"
+                )
+                threading.Thread(target=_apply_win32_transparency, daemon=True).start()
+            threading.Thread(target=_set_window_icon, daemon=True).start()
             threading.Thread(target=self._setup, daemon=True).start()
 
         self._window.events.loaded += _on_loaded
