@@ -62,8 +62,6 @@ html, body {
   justify-content: center;
   font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
-  /* The entire pill surface initiates a window drag on macOS. */
-  -webkit-app-region: drag;
   user-select: none;
 }
 
@@ -234,9 +232,11 @@ class _OverlayPanel:
     All public methods MUST be called from the main AppKit thread
     (i.e. inside a @rumps.timer callback or __init__).
 
-    Drag: the WKWebView HTML body has ``-webkit-app-region: drag``, which
-    forwards any drag gesture to the NSPanel as a native window move — no
-    Win32-style cursor tracking needed on macOS.
+    Drag: an NSEvent local monitor watches LeftMouseDown / LeftMouseDragged /
+    LeftMouseUp events.  On mousedown over this panel the cursor offset from
+    the window origin is recorded; each drag event calls setFrameOrigin_ to
+    move the panel.  This is the macOS equivalent of the Win32 cursor-tracking
+    loop in app_win.py and works regardless of WKWebView internals.
     """
 
     W, H   = 240, 44
@@ -266,8 +266,6 @@ class _OverlayPanel:
         panel.setBackgroundColor_(NSColor.clearColor())
         panel.setHasShadow_(True)
         panel.setIgnoresMouseEvents_(False)
-        # Fallback drag for any edge-case where WKWebView doesn't handle the event.
-        panel.setMovableByWindowBackground_(True)
         self._panel = panel
 
         # ── Dark pill background via CALayer ──────────────────────────────
@@ -296,6 +294,65 @@ class _OverlayPanel:
         self._wk_view = wk_view
 
         panel.orderFront_(None)
+        self._setup_drag()
+
+    # ── Drag via NSEvent local monitor ────────────────────────────────────
+
+    def _setup_drag(self) -> None:
+        """Install NSEvent local monitors to drag the pill anywhere on screen.
+
+        mouseDown over this panel records the grab-point offset.
+        mouseDragged calls setFrameOrigin_ each event — smooth, no lag.
+        mouseUp clears the drag state.
+
+        Monitor objects are kept in self._monitors to prevent GC.
+        """
+        from AppKit import NSEvent
+        from Foundation import NSMakePoint
+
+        NSLeftMouseDownMask    = 1 << 1   # 2
+        NSLeftMouseDraggedMask = 1 << 6   # 64
+        NSLeftMouseUpMask      = 1 << 2   # 4
+
+        panel = self._panel
+        drag: dict = {'active': False, 'cx': 0.0, 'cy': 0.0,
+                      'ox': 0.0, 'oy': 0.0}
+
+        def _down(event):
+            # Only start drag when the click is on our pill panel.
+            if event.windowNumber() != panel.windowNumber():
+                return event
+            loc   = NSEvent.mouseLocation()
+            frame = panel.frame()
+            drag['active'] = True
+            drag['cx'] = loc.x;  drag['cy'] = loc.y
+            drag['ox'] = frame.origin.x;  drag['oy'] = frame.origin.y
+            return event
+
+        def _dragged(event):
+            if not drag['active']:
+                return event
+            loc = NSEvent.mouseLocation()
+            panel.setFrameOrigin_(NSMakePoint(
+                drag['ox'] + loc.x - drag['cx'],
+                drag['oy'] + loc.y - drag['cy'],
+            ))
+            return event
+
+        def _up(event):
+            drag['active'] = False
+            return event
+
+        # Store references — addLocalMonitor returns an opaque monitor object
+        # that must stay alive for the callbacks to fire.
+        self._monitors = [
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                NSLeftMouseDownMask, _down),
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                NSLeftMouseDraggedMask, _dragged),
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                NSLeftMouseUpMask, _up),
+        ]
 
     # ── Public interface (main thread only) ───────────────────────────────
 
