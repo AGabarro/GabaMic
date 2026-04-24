@@ -49,10 +49,8 @@ def _find_config() -> pathlib.Path:
 
 
 CONFIG_PATH = _find_config()
-PILL_W, PILL_H  = 140, 38        # window size (includes transparent glow margin)
-_PILL_TITLE     = "GabaMicPill"  # hidden title used by FindWindowW for transparency
-_CHROMA_CSS     = "#000001"      # near-black chroma-key colour (body bg → OS-transparent)
-_CHROMA_REF     = 0x10000        # COLORREF for #000001: R=0,G=0,B=1 → 0|(0<<8)|(1<<16)
+PILL_W, PILL_H = 140, 38          # window (margin lets outer drop-shadow glow render)
+_PILL_TITLE    = "GabaMicPill"   # window title (hidden; used by FindWindowW for icon)
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +67,7 @@ _PILL_HTML = """\
 
 html, body {
   width: 140px; height: 38px;
-  background: #000001;   /* chroma-key — made OS-transparent at runtime via ctypes */
+  background: transparent;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -105,7 +103,7 @@ html, body {
   justify-content: center;
   overflow: hidden;
   user-select: none;
-  cursor: pointer;
+  cursor: grab;
   position: relative;
   transition:
     border-color 0.38s cubic-bezier(0.4,0,0.2,1),
@@ -119,7 +117,6 @@ html, body {
 .pill.is-recording {
   border-color: #FF6200;
   box-shadow: inset 0 0 12px rgba(255,98,0,0.12);
-  cursor: default;
 }
 .pill.is-transcribing {
   border-color: rgba(255,98,0,0.55);
@@ -301,19 +298,41 @@ function setState(state, text) {
   }
 }
 
-// Left-click: toggle recording
+// ── Drag to move ───────────────────────────────────────────────────
+let _dragX, _dragY, _dragged = false;
+const DRAG_PX = 3;   // pixels of movement before a drag is recognised
+
+pill.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  _dragX = e.screenX; _dragY = e.screenY; _dragged = false;
+  document.body.style.cursor = 'grabbing';
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (e.buttons !== 1 || _dragX === undefined) return;
+  const dx = e.screenX - _dragX, dy = e.screenY - _dragY;
+  if (!_dragged && Math.abs(dx) < DRAG_PX && Math.abs(dy) < DRAG_PX) return;
+  _dragged = true;
+  window.pywebview?.api?.move_by(dx, dy);
+  _dragX = e.screenX; _dragY = e.screenY;
+});
+
+document.addEventListener('mouseup', () => {
+  _dragX = undefined;
+  document.body.style.cursor = '';
+});
+
+// Left-click: toggle recording (suppressed if the gesture was a drag)
 pill.addEventListener('click', () => {
-  if (window.pywebview && window.pywebview.api) {
-    window.pywebview.api.toggle();
-  }
+  if (_dragged) { _dragged = false; return; }
+  window.pywebview?.api?.toggle();
 });
 
 // Right-click: quit
 document.addEventListener('contextmenu', (e) => {
   e.preventDefault();
-  if (window.pywebview && window.pywebview.api) {
-    window.pywebview.api.quit();
-  }
+  window.pywebview?.api?.quit();
 });
 </script>
 </body>
@@ -338,6 +357,10 @@ class _PillApi:
         """Right-click: close the pill."""
         if webview.windows:
             webview.windows[0].destroy()
+
+    def move_by(self, dx: float, dy: float) -> None:
+        """Drag: shift the pill window by (dx, dy) pixels."""
+        self._app.move_by(int(round(dx)), int(round(dy)))
 
 
 # ---------------------------------------------------------------------------
@@ -379,28 +402,58 @@ def _show_error(title: str, message: str) -> None:
         print(f"ERROR — {title}\n{message}", file=sys.stderr)
 
 
-def _apply_transparency(win_title: str, chroma_ref: int) -> None:
-    """Make the pywebview window background OS-transparent via Win32 color-key.
+def _find_icon() -> pathlib.Path | None:
+    """Locate GabaMic.ico next to the exe (frozen) or script (source)."""
+    if getattr(sys, "frozen", False):
+        # PyInstaller bundles GabaMic.ico into _internal/ (sys._MEIPASS) AND
+        # also copies it next to the exe via the datas entry — prefer the one
+        # next to the exe so it's easy for users to find.
+        exe_dir = pathlib.Path(sys.executable).parent
+        candidates = [exe_dir / "GabaMic.ico",
+                      pathlib.Path(sys._MEIPASS) / "GabaMic.ico"]
+    else:
+        candidates = [pathlib.Path(__file__).parent / "GabaMic.ico"]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
 
-    Pixels painted with the chroma-key colour (_CHROMA_CSS / _CHROMA_REF)
-    become fully transparent at the compositor level, so only the pill shape
-    (and its drop-shadow glow) is visible on the desktop.
+
+def _set_window_icon(win_title: str) -> None:
+    """Stamp the G-logo onto the pywebview window via Win32 LoadImage/WM_SETICON.
+
+    This makes the GabaMic icon appear in the Windows taskbar, Alt-Tab
+    switcher, and Task Manager for source builds (where there is no embedded
+    exe icon).  For PyInstaller builds the embedded exe icon already serves
+    this role, but calling this doesn't hurt — it keeps both paths consistent.
     """
     if platform.system() != "Windows":
         return
+    ico_path = _find_icon()
+    if ico_path is None:
+        return
     try:
-        GWL_EXSTYLE   = -20
-        WS_EX_LAYERED = 0x00080000
-        LWA_COLORKEY  = 0x00000001
-        user32 = ctypes.windll.user32
-        hwnd = user32.FindWindowW(None, win_title)
+        WM_SETICON      = 0x0080
+        ICON_SMALL      = 0
+        ICON_BIG        = 1
+        IMAGE_ICON      = 1
+        LR_LOADFROMFILE = 0x00000010
+
+        user32  = ctypes.windll.user32
+        hwnd    = user32.FindWindowW(None, win_title)
         if not hwnd:
             return
-        ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
-        user32.SetLayeredWindowAttributes(hwnd, chroma_ref, 0, LWA_COLORKEY)
+        ico_str = str(ico_path)
+        hicon_big = user32.LoadImageW(None, ico_str, IMAGE_ICON, 32, 32,
+                                       LR_LOADFROMFILE)
+        if hicon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+        hicon_small = user32.LoadImageW(None, ico_str, IMAGE_ICON, 16, 16,
+                                         LR_LOADFROMFILE)
+        if hicon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
     except Exception:
-        pass  # transparency is cosmetic — never crash on failure
+        pass  # icon is cosmetic — never crash on failure
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +477,8 @@ class GabaMicWin:
         self._ready = False
         self._hotkey: HotkeyListener | None = None
         self._recording = False           # shared between click-toggle and hotkey
+        self._win_x = 0                   # tracked position for drag-to-move
+        self._win_y = 0
 
     # ------------------------------------------------------------------
     # UI helpers  (thread-safe — pywebview queues evaluate_js internally)
@@ -511,6 +566,13 @@ class GabaMicWin:
         time.sleep(2.5)
         self._set_state("idle")
 
+    def move_by(self, dx: int, dy: int) -> None:
+        """Shift the window by (dx, dy) pixels relative to its current position."""
+        self._win_x += dx
+        self._win_y += dy
+        if self._window:
+            self._window.move(self._win_x, self._win_y)
+
     # ------------------------------------------------------------------
     # Click-to-toggle (called from JS via _PillApi.toggle)
     # ------------------------------------------------------------------
@@ -552,25 +614,26 @@ class GabaMicWin:
 
         x = (sw - PILL_W) // 2
         y = sh - PILL_H - 80
+        self._win_x, self._win_y = x, y   # seed position tracker for drag-to-move
 
         self._window = webview.create_window(
-            title            = _PILL_TITLE,   # hidden (frameless); needed for FindWindowW
-            html             = _PILL_HTML,
-            js_api           = _PillApi(self),
-            width            = PILL_W,
-            height           = PILL_H,
-            x                = x,
-            y                = y,
-            resizable        = False,
-            frameless        = True,
-            on_top           = True,
-            background_color = _CHROMA_CSS,   # chroma-key → transparent via ctypes
-            min_size         = (PILL_W, PILL_H),
+            title        = _PILL_TITLE,   # hidden (frameless); used by FindWindowW for icon
+            html         = _PILL_HTML,
+            js_api       = _PillApi(self),
+            width        = PILL_W,
+            height       = PILL_H,
+            x            = x,
+            y            = y,
+            resizable    = False,
+            frameless    = True,
+            on_top       = True,
+            transparent  = True,          # pywebview native transparency (all platforms)
+            min_size     = (PILL_W, PILL_H),
         )
 
         def _on_loaded():
             self._ready = True
-            _apply_transparency(_PILL_TITLE, _CHROMA_REF)
+            _set_window_icon(_PILL_TITLE)
             threading.Thread(target=self._setup, daemon=True).start()
 
         self._window.events.loaded += _on_loaded
