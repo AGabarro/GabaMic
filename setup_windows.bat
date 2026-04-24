@@ -30,14 +30,25 @@ if not defined PYTHON (
     exit /b 1
 )
 
-:: ── 2. Check Python version ≥ 3.10 ───────────────────────────────────────
-%PYTHON% -c "import sys; exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
+:: ── 2. Check Python version is 3.10, 3.11, or 3.12 ──────────────────────
+:: Python 3.13+ is not supported yet: pywebview depends on pythonnet,
+:: which has no pre-built wheel for Python 3.13/3.14. Building it from
+:: source requires .NET SDK + NuGet which most users don't have.
+%PYTHON% -c "import sys; exit(0 if (3,10) <= sys.version_info < (3,13) else 1)" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo Python 3.10 or newer is required.
-    echo.
     for /f "tokens=*" %%V in ('%PYTHON% --version 2^>^&1') do echo Installed: %%V
     echo.
-    echo Download a newer version from https://www.python.org/downloads/
+    echo GabaMic requires Python 3.10, 3.11, or 3.12.
+    echo Python 3.13 and 3.14 are not supported yet.
+    echo.
+    echo Please install Python 3.12 from:
+    echo   https://www.python.org/downloads/release/python-3128/
+    echo.
+    echo IMPORTANT: on the installer's first page, tick
+    echo   "Add Python to PATH"
+    echo before clicking Install.
+    echo.
+    echo After installing Python 3.12, run this script again.
     pause
     exit /b 1
 )

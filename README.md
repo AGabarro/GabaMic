@@ -33,7 +33,10 @@ Use this if no pre-built release is available yet, or if you want to run the lat
 
 **Step 1 — Install Python (skip if already installed)**
 
-Download Python 3.10 or newer from **[python.org/downloads](https://www.python.org/downloads/)**.
+Download **Python 3.12** from **[python.org/downloads/release/python-3128/](https://www.python.org/downloads/release/python-3128/)**.
+
+> Python 3.10, 3.11, and 3.12 all work. Python 3.13 and 3.14 are **not supported yet**
+> because a required dependency (`pythonnet`) has no pre-built package for those versions.
 
 On the installer's first screen, tick **"Add Python to PATH"** before clicking Install.
 
