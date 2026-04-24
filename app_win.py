@@ -642,14 +642,22 @@ class GabaMicWin:
         Called from JS once a drag gesture exceeds the movement threshold.
         Windows takes over mouse tracking from that point — smooth, no DPI
         issues, no JS delta accumulation.
+
+        Two-step protocol:
+        1. ReleaseCapture() — frees mouse capture from the WebView2 child window
+           so the parent frame can accept the WM_NCLBUTTONDOWN.
+        2. SendMessageW (synchronous) — sends WM_NCLBUTTONDOWN + HTCAPTION, which
+           enters the OS drag loop on the UI thread.  The bridge thread blocks here
+           for the duration of the drag, then resumes.  Using PostMessageW (async)
+           was unreliable because the message could arrive after the button state
+           had already changed.
         """
         if not self._hwnd:
             return
         try:
             user32 = ctypes.windll.user32
-            # WM_NCLBUTTONDOWN = 0x00A1, HTCAPTION = 2
-            # PostMessageW is async so the bridge thread is not blocked during drag.
-            user32.PostMessageW(self._hwnd, 0x00A1, 2, 0)
+            user32.ReleaseCapture()                    # free WebView2 child capture
+            user32.SendMessageW(self._hwnd, 0x00A1, 2, 0)  # WM_NCLBUTTONDOWN, HTCAPTION
         except Exception:
             pass
 
