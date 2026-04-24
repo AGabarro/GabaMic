@@ -34,7 +34,7 @@ jobs:
 
       - name: Zip the output folder
         shell: pwsh
-        run: Compress-Archive -Path dist\GabaMic\* -DestinationPath GabaMic-Windows.zip
+        run: Compress-Archive -Path dist\GabaMic -DestinationPath GabaMic-Windows.zip
 
       # Always upload as a downloadable workflow artifact (useful for test builds)
       - name: Upload artifact

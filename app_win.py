@@ -234,23 +234,39 @@ class _PillApi:
 # ---------------------------------------------------------------------------
 
 def load_config() -> dict:
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except json.JSONDecodeError as exc:
+        _show_error("GabaMic — Config Error",
+                    f"config.json is not valid JSON:\n\n{exc}\n\n"
+                    "Delete config.json and restart to use defaults.")
+        raise
+    except FileNotFoundError:
+        _show_error("GabaMic — Config Error",
+                    f"config.json not found:\n{CONFIG_PATH}")
+        raise
 
 
 def _model_is_cached(model_size: str) -> bool:
     """Return True if the Whisper model is already in the local HuggingFace cache."""
-    cache_dir = pathlib.Path.home() / ".cache" / "huggingface" / "hub"
+    import os
+    hf_home = os.getenv("HF_HOME")
+    cache_dir = (pathlib.Path(hf_home) / "hub") if hf_home else (
+        pathlib.Path.home() / ".cache" / "huggingface" / "hub"
+    )
+    if not cache_dir.exists():
+        return False
     pattern = f"models--Systran--faster-whisper-{model_size}"
     return any(cache_dir.glob(f"{pattern}*"))
 
 
 def _show_error(title: str, message: str) -> None:
-    """Show a native Windows message-box error dialog."""
+    """Show a native Windows message-box error dialog, with stderr fallback."""
     try:
         ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)  # MB_ICONERROR
     except Exception:
-        pass  # non-Windows (e.g. dev/test on macOS)
+        print(f"ERROR — {title}\n{message}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -342,9 +358,10 @@ class GabaMicWin:
         self._set_state("recording")
 
     def _on_stop(self) -> None:
+        audio = self._recorder.stop()   # always stop; safe if start() was never called
         if self._transcriber is None:
+            self._set_state("idle")
             return
-        audio = self._recorder.stop()
 
         if len(audio) == 0:
             self._set_state("idle")
@@ -383,6 +400,7 @@ class GabaMicWin:
         self._window = webview.create_window(
             title            = "",
             html             = _PILL_HTML,
+            js_api           = _PillApi(),
             width            = PILL_W,
             height           = PILL_H,
             x                = x,
@@ -404,7 +422,7 @@ class GabaMicWin:
         print("GabaMic starting.  Hold Alt+S to dictate once ready.  Right-click to quit.")
 
         # Start pywebview — blocks until the window is closed
-        webview.start(api=_PillApi(), private_mode=False)
+        webview.start(private_mode=False)
 
         if self._hotkey:
             self._hotkey.stop()
