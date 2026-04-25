@@ -777,15 +777,8 @@ class GabaMicWin:
             resizable        = False,
             frameless        = True,
             on_top           = True,
-            # transparent=True makes pywebview set WebView2's DefaultBackgroundColor
-            # to RGBA(0,0,0,0) on all platforms.  Combined with the DWM setup in
-            # _apply_win32_transparency (WS_EX_NOREDIRECTIONBITMAP +
-            # DwmExtendFrameIntoClientArea), only the pill's opaque HTML pixels are
-            # visible on Windows; the CSS-transparent body shows the desktop through.
-            transparent      = True,
-            # Dark background avoids a white flash before WebView2 paints the pill.
-            # pywebview overrides this with RGBA(0,0,0,0) when transparent=True.
-            background_color = "#080B14",
+            transparent      = not (platform.system() == "Windows"),
+            background_color = "#000000",
             min_size         = (PILL_W, PILL_H),
         )
 
