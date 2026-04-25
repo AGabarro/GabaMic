@@ -472,25 +472,24 @@ def _find_pill_hwnd(win_title: str) -> int:
 
 
 def _apply_win32_transparency(hwnd: int) -> None:
-    """Enable per-pixel DWM transparency on the pill window on Windows.
+    """Enable per-pixel transparency on the pill window on Windows.
 
-    The old LWA_COLORKEY (chroma-key) approach does not work for DirectX-
-    rendered content: per Microsoft documentation, chroma key is unsupported
-    on layered windows that contain a DirectX surface.  WebView2 renders via
-    DirectX, so the chroma key pixels were never made transparent — they
-    appeared as a solid black rectangle.
+    Two-flag approach — the documented technique for transparent WebView2
+    windows (same as Microsoft's own WebView2 transparent-window sample):
 
-    The correct approach for WebView2 (same technique used by Electron / VS
-    Code for transparent Chromium windows on Windows):
-      1. WS_EX_LAYERED — required to participate in DWM compositing.
-      2. WS_EX_NOREDIRECTIONBITMAP — tells DWM to receive WebView2's DirectX
-         surface directly, bypassing the GDI redirection bitmap.
-      3. DwmExtendFrameIntoClientArea(-1,-1,-1,-1) — extends the DWM frame
-         into the entire client area, enabling per-pixel alpha compositing.
+      1. WS_EX_LAYERED — opts the window into DWM alpha compositing.
+      2. WS_EX_NOREDIRECTIONBITMAP — tells DWM to source pixels directly
+         from WebView2's DirectX surface instead of a GDI redirection bitmap.
+         With WebView2's DefaultBackgroundColor set to RGBA(0,0,0,0) (done
+         by pywebview when transparent=True), those pixels carry alpha=0 and
+         DWM composites them as transparent — the desktop shows through.
 
-    pywebview sets WebView2's DefaultBackgroundColor to RGBA(0,0,0,0) when
-    transparent=True.  DWM then composites only the pill's opaque HTML pixels
-    over whatever is behind the window; the CSS-transparent body disappears.
+    What NOT to do:
+      • LWA_COLORKEY (chroma key): unsupported for DirectX surfaces per
+        Microsoft docs — caused the solid black rectangle in ≤v1.1.8.
+      • DwmExtendFrameIntoClientArea(-1,-1,-1,-1): extends DWM's glass frame
+        which renders as solid white on Windows 10/11 without Aero Glass —
+        caused the white rectangle in v1.1.9.
     """
     if platform.system() != "Windows":
         return
@@ -499,22 +498,11 @@ def _apply_win32_transparency(hwnd: int) -> None:
         WS_EX_LAYERED             = 0x00080000
         WS_EX_NOREDIRECTIONBITMAP = 0x00200000
 
-        class MARGINS(ctypes.Structure):
-            _fields_ = [("cxLeftWidth",    ctypes.c_int),
-                        ("cxRightWidth",   ctypes.c_int),
-                        ("cyTopHeight",    ctypes.c_int),
-                        ("cyBottomHeight", ctypes.c_int)]
-
         user32 = ctypes.windll.user32
-        dwmapi = ctypes.windll.dwmapi
-
         ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         user32.SetWindowLongW(
             hwnd, GWL_EXSTYLE,
             ex | WS_EX_LAYERED | WS_EX_NOREDIRECTIONBITMAP,
-        )
-        dwmapi.DwmExtendFrameIntoClientArea(
-            hwnd, ctypes.byref(MARGINS(-1, -1, -1, -1)),
         )
     except Exception:
         pass  # transparency is cosmetic — never crash on failure

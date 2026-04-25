@@ -354,7 +354,8 @@ These caused real runtime errors on Windows — do not repeat them:
 | `webview.start(api=_PillApi())` | `TypeError: start() got unexpected keyword argument 'api'` | Use `js_api=` on `create_window()` only |
 | `background_color="#00000000"` (8-digit hex) | `ValueError: #00000000 is not a valid hex triplet color` | Use 6-digit hex only: `"#080B14"` |
 | `-webkit-app-region: drag` on the pill div | Left-click events never reach JS | Do not use the CSS drag region. Dragging is implemented via a Win32 cursor-tracking loop — see `start_drag()` / `_drag_loop()` |
-| `SetLayeredWindowAttributes + LWA_COLORKEY` (chroma key) for transparency | Black rectangle visible behind pill — chroma key is unsupported on layered windows with a DirectX surface (WebView2 renders via DirectX) | Use `transparent=True` + `WS_EX_NOREDIRECTIONBITMAP` + `DwmExtendFrameIntoClientArea(-1,-1,-1,-1)` — see `_apply_win32_transparency()` |
+| `SetLayeredWindowAttributes + LWA_COLORKEY` (chroma key) for transparency | Solid black rectangle — chroma key is unsupported for DirectX surfaces (WebView2 renders via DirectX) | `transparent=True` + `WS_EX_LAYERED \| WS_EX_NOREDIRECTIONBITMAP` — see `_apply_win32_transparency()` |
+| `DwmExtendFrameIntoClientArea(-1,-1,-1,-1)` for transparency | Solid white rectangle — DWM "glass" has no Aero blur on Win10/11, so the extended frame renders white | Do NOT call this. `WS_EX_NOREDIRECTIONBITMAP` alone lets DWM composite WebView2's DirectX alpha channel correctly |
 
 ---
 
