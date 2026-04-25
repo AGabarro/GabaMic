@@ -301,11 +301,10 @@ function setState(state, text) {
 }
 
 // ── Drag to move ────────────────────────────────────────────────────
-// On every mousemove while the left button is held, send the delta
-// (screenX/screenY, not clientX/clientY) to Python via api.move_by().
-// Python accumulates the position and calls window.move() — pywebview's
-// own API — which dispatches to the WebView2 UI thread correctly.
-// Click is detected on the pill's click event, suppressed after a drag.
+// mousedown starts a Win32 GetCursorPos polling loop in Python so the
+// window follows the cursor even when the mouse exits the small WebView2
+// viewport (JS mousemove only fires within the window's bounds).
+// mouseup stops the loop.  Click is suppressed after a drag.
 let _dragX, _dragY, _dragged = false;
 const DRAG_PX = 3;
 
@@ -314,20 +313,21 @@ pill.addEventListener('mousedown', (e) => {
   _dragX = e.screenX; _dragY = e.screenY; _dragged = false;
   document.body.style.cursor = 'grabbing';
   e.preventDefault();
+  window.pywebview?.api?.start_drag();
 });
 
 document.addEventListener('mousemove', (e) => {
   if (e.buttons !== 1 || _dragX === undefined) return;
   const dx = e.screenX - _dragX, dy = e.screenY - _dragY;
-  if (!_dragged && Math.abs(dx) < DRAG_PX && Math.abs(dy) < DRAG_PX) return;
-  _dragged = true;
-  window.pywebview?.api?.move_by(dx, dy);
-  _dragX = e.screenX; _dragY = e.screenY;
+  if (!_dragged && (Math.abs(dx) >= DRAG_PX || Math.abs(dy) >= DRAG_PX)) {
+    _dragged = true;
+  }
 });
 
 document.addEventListener('mouseup', () => {
   _dragX = undefined;
   document.body.style.cursor = '';
+  window.pywebview?.api?.stop_drag();
 });
 
 // Left-click: toggle recording (suppressed when the gesture was a drag)
@@ -365,9 +365,13 @@ class _PillApi:
         if webview.windows:
             webview.windows[0].destroy()
 
-    def move_by(self, dx: float, dy: float) -> None:
-        """Called from JS on every drag mousemove; shifts the window by (dx, dy)."""
-        self._app.move_by(int(dx), int(dy))
+    def start_drag(self) -> None:
+        """JS mousedown: begin Win32 cursor-tracking drag."""
+        self._app.start_drag()
+
+    def stop_drag(self) -> None:
+        """JS mouseup: stop the cursor-tracking drag loop."""
+        self._app.stop_drag()
 
 
 # ---------------------------------------------------------------------------
@@ -543,8 +547,9 @@ class GabaMicWin:
         self._hotkey: HotkeyListener | None = None
         self._recording = False           # shared between click-toggle and hotkey
         self._hwnd: int = 0               # cached Win32 HWND (transparency + icon only)
-        self._win_x: int = 0              # tracked window position for move_by
+        self._win_x: int = 0              # tracked window position
         self._win_y: int = 0
+        self._dragging = False            # True while _drag_loop thread is running
 
     # ------------------------------------------------------------------
     # UI helpers  (thread-safe — pywebview queues evaluate_js internally)
@@ -641,19 +646,62 @@ class GabaMicWin:
         _apply_win32_transparency(hwnd)
         _set_window_icon(hwnd)
 
-    def move_by(self, dx: int, dy: int) -> None:
-        """Shift the pill window by (dx, dy) CSS pixels.
+    def start_drag(self) -> None:
+        """JS mousedown: start a Win32 cursor-tracking loop to drag the window.
 
-        Called from JS on every mousemove during a drag.  Uses pywebview's own
-        window.move() API, which dispatches to the WebView2 UI thread — the only
-        reliable way to reposition a WebView2-hosted frameless window.
-        Raw Win32 SetWindowPos from a background thread does not work correctly
-        with WebView2's compositor.
+        GetCursorPos fires OS-wide so the drag keeps working even when the
+        cursor exits the small (140×38 px) WebView2 viewport — unlike JS
+        mousemove, which only fires within the window's bounds.
+
+        window.move() is used (not SetWindowPos directly) because it dispatches
+        to the WebView2 UI thread; calling SetWindowPos from an outside thread
+        does not reliably update WebView2's compositor layout.
         """
-        self._win_x += dx
-        self._win_y += dy
-        if self._window:
-            self._window.move(self._win_x, self._win_y)
+        if self._dragging:
+            return
+        self._dragging = True
+        threading.Thread(target=self._drag_loop, daemon=True).start()
+
+    def stop_drag(self) -> None:
+        """JS mouseup: signal the cursor-tracking loop to exit."""
+        self._dragging = False
+
+    def _drag_loop(self) -> None:
+        """Poll GetCursorPos while _dragging; move via window.move()."""
+        try:
+            if platform.system() != "Windows":
+                return
+
+            user32 = ctypes.windll.user32
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            # Snapshot: cursor position and window position at drag start.
+            c0 = POINT()
+            user32.GetCursorPos(ctypes.byref(c0))
+
+            if self._hwnd:
+                rect = (ctypes.c_long * 4)()
+                user32.GetWindowRect(self._hwnd, rect)
+                wx0, wy0 = rect[0], rect[1]
+            else:
+                wx0, wy0 = self._win_x, self._win_y
+
+            cn = POINT()
+            while self._dragging and self._window:
+                user32.GetCursorPos(ctypes.byref(cn))
+                new_x = wx0 + (cn.x - c0.x)
+                new_y = wy0 + (cn.y - c0.y)
+                if new_x != self._win_x or new_y != self._win_y:
+                    self._win_x = new_x
+                    self._win_y = new_y
+                    self._window.move(new_x, new_y)
+                time.sleep(0.010)   # 100 Hz
+        except Exception:
+            pass
+        finally:
+            self._dragging = False
 
     # ------------------------------------------------------------------
     # Click-to-toggle (called from JS via _PillApi.toggle)
