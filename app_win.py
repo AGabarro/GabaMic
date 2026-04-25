@@ -50,9 +50,7 @@ def _find_config() -> pathlib.Path:
 
 CONFIG_PATH = _find_config()
 PILL_W, PILL_H = 140, 38          # window (margin lets outer drop-shadow glow render)
-_PILL_TITLE    = "GabaMicPill"   # window title (hidden; used by FindWindowW for icon/transparency)
-_CHROMA_CSS    = "#000001"        # chroma-key colour injected on Windows body background
-_CHROMA_REF    = 0x10000          # COLORREF for #000001: R=0,G=0,B=1 → 0|(0<<8)|(1<<16)
+_PILL_TITLE    = "GabaMicPill"   # window title (hidden; used by FindWindowW for icon)
 
 
 # ---------------------------------------------------------------------------
@@ -474,25 +472,50 @@ def _find_pill_hwnd(win_title: str) -> int:
 
 
 def _apply_win32_transparency(hwnd: int) -> None:
-    """Apply chroma-key transparency to the pill window on Windows.
+    """Enable per-pixel DWM transparency on the pill window on Windows.
 
-    Upgrades the window to a layered window and registers _CHROMA_CSS
-    (#000001) as the transparent colour.  The pill's HTML body background
-    is set to #000001 by Python before this call, so those pixels are
-    invisible at the OS compositor level — only the pill shape (and its
-    drop-shadow) remains visible on the desktop.
+    The old LWA_COLORKEY (chroma-key) approach does not work for DirectX-
+    rendered content: per Microsoft documentation, chroma key is unsupported
+    on layered windows that contain a DirectX surface.  WebView2 renders via
+    DirectX, so the chroma key pixels were never made transparent — they
+    appeared as a solid black rectangle.
+
+    The correct approach for WebView2 (same technique used by Electron / VS
+    Code for transparent Chromium windows on Windows):
+      1. WS_EX_LAYERED — required to participate in DWM compositing.
+      2. WS_EX_NOREDIRECTIONBITMAP — tells DWM to receive WebView2's DirectX
+         surface directly, bypassing the GDI redirection bitmap.
+      3. DwmExtendFrameIntoClientArea(-1,-1,-1,-1) — extends the DWM frame
+         into the entire client area, enabling per-pixel alpha compositing.
+
+    pywebview sets WebView2's DefaultBackgroundColor to RGBA(0,0,0,0) when
+    transparent=True.  DWM then composites only the pill's opaque HTML pixels
+    over whatever is behind the window; the CSS-transparent body disappears.
     """
     if platform.system() != "Windows":
         return
     try:
-        GWL_EXSTYLE   = -20
-        WS_EX_LAYERED = 0x00080000
-        LWA_COLORKEY  = 0x00000001
+        GWL_EXSTYLE               = -20
+        WS_EX_LAYERED             = 0x00080000
+        WS_EX_NOREDIRECTIONBITMAP = 0x00200000
+
+        class MARGINS(ctypes.Structure):
+            _fields_ = [("cxLeftWidth",    ctypes.c_int),
+                        ("cxRightWidth",   ctypes.c_int),
+                        ("cyTopHeight",    ctypes.c_int),
+                        ("cyBottomHeight", ctypes.c_int)]
 
         user32 = ctypes.windll.user32
+        dwmapi = ctypes.windll.dwmapi
+
         ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
-        user32.SetLayeredWindowAttributes(hwnd, _CHROMA_REF, 0, LWA_COLORKEY)
+        user32.SetWindowLongW(
+            hwnd, GWL_EXSTYLE,
+            ex | WS_EX_LAYERED | WS_EX_NOREDIRECTIONBITMAP,
+        )
+        dwmapi.DwmExtendFrameIntoClientArea(
+            hwnd, ctypes.byref(MARGINS(-1, -1, -1, -1)),
+        )
     except Exception:
         pass  # transparency is cosmetic — never crash on failure
 
@@ -755,8 +778,6 @@ class GabaMicWin:
         y = sh - PILL_H - 80
         self._win_x, self._win_y = x, y   # seed position tracker for move_by
 
-        is_win = platform.system() == "Windows"
-
         self._window = webview.create_window(
             title            = _PILL_TITLE,
             html             = _PILL_HTML,
@@ -768,26 +789,22 @@ class GabaMicWin:
             resizable        = False,
             frameless        = True,
             on_top           = True,
-            # macOS: pywebview calls setOpaque_(False) + drawsTransparentBackground.
-            # Windows: pywebview transparent support is unreliable; Win32 chroma-key
-            #          is used instead (see _on_loaded below).
-            transparent      = not is_win,
-            # Windows: seed the WebView2 background with the chroma-key colour so
-            # there is no white flash while the Win32 layered-window trick is applied.
-            # macOS: alpha is forced to 0 by transparent=True, value irrelevant.
-            background_color = _CHROMA_CSS if is_win else "#080B14",
+            # transparent=True makes pywebview set WebView2's DefaultBackgroundColor
+            # to RGBA(0,0,0,0) on all platforms.  Combined with the DWM setup in
+            # _apply_win32_transparency (WS_EX_NOREDIRECTIONBITMAP +
+            # DwmExtendFrameIntoClientArea), only the pill's opaque HTML pixels are
+            # visible on Windows; the CSS-transparent body shows the desktop through.
+            transparent      = True,
+            # Dark background avoids a white flash before WebView2 paints the pill.
+            # pywebview overrides this with RGBA(0,0,0,0) when transparent=True.
+            background_color = "#080B14",
             min_size         = (PILL_W, PILL_H),
         )
 
         def _on_loaded():
             self._ready = True
             if platform.system() == "Windows":
-                # Paint body with the chroma-key colour so Win32 can key it out.
-                self._window.evaluate_js(
-                    "document.documentElement.style.background='" + _CHROMA_CSS + "';"
-                    "document.body.style.background='" + _CHROMA_CSS + "';"
-                )
-                # Find HWND once, then apply transparency + icon in one thread.
+                # Find HWND once, then apply DWM transparency + icon in one thread.
                 threading.Thread(target=self._win32_setup, daemon=True).start()
             threading.Thread(target=self._setup, daemon=True).start()
 

@@ -354,6 +354,7 @@ These caused real runtime errors on Windows — do not repeat them:
 | `webview.start(api=_PillApi())` | `TypeError: start() got unexpected keyword argument 'api'` | Use `js_api=` on `create_window()` only |
 | `background_color="#00000000"` (8-digit hex) | `ValueError: #00000000 is not a valid hex triplet color` | Use 6-digit hex only: `"#080B14"` |
 | `-webkit-app-region: drag` on the pill div | Left-click events never reach JS | Do not use the CSS drag region. Dragging is implemented via a Win32 cursor-tracking loop — see `start_drag()` / `_drag_loop()` |
+| `SetLayeredWindowAttributes + LWA_COLORKEY` (chroma key) for transparency | Black rectangle visible behind pill — chroma key is unsupported on layered windows with a DirectX surface (WebView2 renders via DirectX) | Use `transparent=True` + `WS_EX_NOREDIRECTIONBITMAP` + `DwmExtendFrameIntoClientArea(-1,-1,-1,-1)` — see `_apply_win32_transparency()` |
 
 ---
 
@@ -457,7 +458,8 @@ pynput needs **Accessibility** permission to read global keystrokes:
 - **`daemon=True` on hotkey callback threads** — removing this will prevent clean shutdown.
 - **The `try/finally` in injector.py** — removing it will occasionally destroy the user's clipboard.
 - **`js_api=` on `create_window()` in app_win.py** — do NOT move it to `webview.start()`. pywebview 4.x removed `api=` from `start()`.
-- **`background_color` in app_win.py** — must be a 6-digit hex string (`"#080B14"`). pywebview rejects 8-digit (alpha) hex values.
+- **`background_color` in app_win.py** — must be a 6-digit hex string (`"#080B14"`). pywebview rejects 8-digit (alpha) hex values. It is only a flash-prevention hint; `transparent=True` overrides it for actual rendering.
+- **`transparent=True` on Windows in app_win.py** — do NOT revert to `transparent=False` + chroma key. `LWA_COLORKEY` cannot make DirectX-rendered content (WebView2) transparent. The correct approach is `transparent=True` + DWM setup in `_apply_win32_transparency()`.
 - **`_find_config()` in app_win.py** — the exe/`_internal` split is intentional; this function is the only correct way to locate config in both frozen and source modes.
 - **`console=False` in GabaMic.spec** — removes the terminal window. Errors surface via `_show_error()` (Windows `MessageBoxW`). Do not enable the console in production builds.
 - **The zip command in build_windows.yml** — `Compress-Archive -Path dist\GabaMic` (not `dist\GabaMic\*`) preserves the parent folder in the zip so extracting it gives users a clean `GabaMic\` folder.
