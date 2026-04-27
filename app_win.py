@@ -557,6 +557,8 @@ class GabaMicWin:
         self._ready = False
         self._hotkey: HotkeyListener | None = None
         self._recording = False           # shared between click-toggle and hotkey
+        self._busy = False                # True while _stop_recording is transcribing
+        self._state_lock = threading.Lock()  # guards _recording + _busy mutations
         self._hwnd: int = 0               # cached Win32 HWND (transparency + icon only)
         self._win_x: int = 0              # tracked window position
         self._win_y: int = 0
@@ -620,22 +622,32 @@ class GabaMicWin:
     # ------------------------------------------------------------------
 
     def _start_recording(self) -> None:
-        """Begin capturing audio and update the UI."""
-        self._recording = True
+        """Begin capturing audio and update the UI.
+
+        Caller must have already set ``_recording = True`` under ``_state_lock``.
+        """
         self._recorder.start()
         self._set_state("recording")
 
     def _stop_recording(self) -> None:
-        """Stop capturing, transcribe, inject, and update the UI."""
-        self._recording = False
+        """Stop capturing, transcribe, inject, and update the UI.
+
+        Caller must have already set ``_recording = False`` and ``_busy = True``
+        under ``_state_lock``.  This method clears ``_busy`` when done.
+        """
         audio = self._recorder.stop()
 
         if len(audio) == 0:
+            with self._state_lock:
+                self._busy = False
             self._set_state("idle")
             return
 
         self._set_state("transcribing")
         text = self._transcriber.transcribe(audio)
+
+        with self._state_lock:
+            self._busy = False
 
         if text:
             self._injector.inject(text)
@@ -722,7 +734,17 @@ class GabaMicWin:
         """Left-click handler: start if idle, stop if recording."""
         if self._transcriber is None:
             return  # still initialising
-        if not self._recording:
+        with self._state_lock:
+            if self._busy:
+                return  # transcription in progress — drop the click
+            if not self._recording:
+                self._recording = True
+                do_start = True
+            else:
+                self._recording = False
+                self._busy = True
+                do_start = False
+        if do_start:
             self._start_recording()
         else:
             self._stop_recording()
@@ -732,13 +754,20 @@ class GabaMicWin:
     # ------------------------------------------------------------------
 
     def _on_hotkey_start(self) -> None:
-        if self._transcriber is None or self._recording:
+        if self._transcriber is None:
             return
+        with self._state_lock:
+            if self._recording or self._busy:
+                return
+            self._recording = True
         self._start_recording()
 
     def _on_hotkey_stop(self) -> None:
-        if not self._recording:
-            return
+        with self._state_lock:
+            if not self._recording:
+                return
+            self._recording = False
+            self._busy = True
         self._stop_recording()
 
     # ------------------------------------------------------------------
